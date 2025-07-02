@@ -2841,7 +2841,7 @@ int main(int argc, char *argv[]) {
     //register a crash handler for Windows
     SetUnhandledExceptionFilter(CrashFilter);
 #endif
-
+    
     const char *name = strrchr(argv[0], '/');
     if (name == NULL) {
         name = argv[0];
@@ -2869,7 +2869,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 #endif
-
+    printf("zhangtiancheng test\n");
     commandline_run(&main_cmd, argc, argv);
     return 0;
 }
