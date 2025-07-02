@@ -137,14 +137,22 @@ add_custom_target(bundle
 
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/bundle)
 
+if(CMAKE_SYSTEM_PROCESSOR} STREQUAL AMD64)
+    set(bundle_processor "x86_64")
+elseif(CMAKE_SYSTEM_PROCESSOR STREQUAL aarch64)
+    set(bundle_processor "arm64")
+else()
+    set(bundle_processor ${CMAKE_SYSTEM_PROCESSOR})
+endif()
+
 macro(BUNDLE_COMP comp)
     add_custom_target(${comp}-bundle
-        BYPRODUCTS ${CMAKE_BINARY_DIR}/bundle/${comp}-${CMAKE_SYSTEM_NAME}_${CMAKE_SYSTEM_PROCESSOR}.zip
+        BYPRODUCTS ${CMAKE_BINARY_DIR}/bundle/${comp}-${CMAKE_SYSTEM_NAME}_${bundle_processor}.zip
         DEPENDS ${comp}
         # use generator expression to set working directory to the target's build directory. this works for multi-config generators, e.g. when "--config" is specified at build time.
         WORKING_DIRECTORY "$<TARGET_FILE_DIR:${comp}>"
-        COMMENT "adding components to bundle ${comp} for ${CMAKE_SYSTEM_NAME}:${CMAKE_SYSTEM_PROCESSOR}: $<TARGET_FILE_NAME:${comp}> ${${comp}_BUNDLE_COMPS}"
-        COMMAND ${CMAKE_COMMAND} -E tar "cf" "${CMAKE_BINARY_DIR}/bundle/${comp}-${CMAKE_SYSTEM_NAME}_${CMAKE_SYSTEM_PROCESSOR}.zip" --format=zip -- $<TARGET_FILE_NAME:${comp}> ${${comp}_BUNDLE_COMPS})
+        COMMENT "adding components to bundle ${comp} for ${CMAKE_SYSTEM_NAME}:${bundle_processor}: $<TARGET_FILE_NAME:${comp}> ${${comp}_BUNDLE_COMPS}"
+        COMMAND ${CMAKE_COMMAND} -E tar "cf" "${CMAKE_BINARY_DIR}/bundle/${comp}-${CMAKE_SYSTEM_NAME}_${bundle_processor}.zip" --format=zip -- $<TARGET_FILE_NAME:${comp}> ${${comp}_BUNDLE_COMPS})
     add_dependencies(bundle ${comp}-bundle)
 endmacro()
 
