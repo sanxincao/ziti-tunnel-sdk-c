@@ -21,11 +21,11 @@
 #ifndef ZITI_TUNNEL_SDK_C_TUN_H
 #define ZITI_TUNNEL_SDK_C_TUN_H
 
-extern netif_driver tun_open(struct uv_loop_s* loop, uint32_t tun_ip, const char* cidr4, struct in6_addr* tun_ip6, const char* cidr6, char* error, size_t error_len);
+extern netif_driver tun_open(struct uv_loop_s* loop, uint32_t tun_ip, const char* cidr4, struct ip6_addr* tun_ip6, const char* cidr6, char* error, size_t error_len);
 
-extern int set_dns(netif_driver tun, uint32_t dns_ip);
+extern int set_dns(netif_handle tun, uint32_t dns_ip);
 
-extern int set_ip6_dns(netif_handle tun, struct in6_addr dns_ip6);
+extern int set_ip6_dns(netif_handle tun, struct ip6_addr dns_ip6);
 
 
 

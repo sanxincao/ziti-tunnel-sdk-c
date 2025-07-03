@@ -14,6 +14,8 @@
  limitations under the License.
  */
 
+// Prevent LWIP from providing byteorder functions to avoid conflicts with system headers
+#define LWIP_DONT_PROVIDE_BYTEORDER_FUNCTIONS 1
 
 #include <ziti/ziti_dns.h>
 #include <ziti/ziti_tunnel_cbs.h>
@@ -28,6 +30,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <time.h>
+#include <inttypes.h>  // For portable integer formatting macros
 
 #ifndef MAXBUFFERLEN
 #define MAXBUFFERLEN 8192
@@ -191,8 +194,8 @@ static void ip_dump(const tunnel_ip_stats *stats, dump_writer writer, void *writ
     char local_addr[64];
     char remote_addr[64];
     for (i = 0; conns[i] != NULL; i++) {
-        snprintf(local_addr, sizeof(local_addr), "%s:%ld", conns[i]->local_ip, conns[i]->local_port);
-        snprintf(remote_addr, sizeof(remote_addr), "%s:%ld", conns[i]->remote_ip, conns[i]->remote_port);
+        snprintf(local_addr, sizeof(local_addr), "%s:%lld", conns[i]->local_ip, (long long)conns[i]->local_port);
+        snprintf(remote_addr, sizeof(remote_addr), "%s:%lld", conns[i]->remote_ip, (long long)conns[i]->remote_port);
         writer(writer_ctx, "%-12s%-40s%-40s%-16s%-24s\n",
                conns[i]->protocol, local_addr, remote_addr, conns[i]->state, conns[i]->service);
     }
@@ -404,7 +407,8 @@ static int process_cmd(const tunnel_command *cmd, command_cb cb, void *ctx) {
                 if (dump_path != NULL) {
                     uv_timeval64_t now;
                     uv_gettimeofday(&now);
-                    struct tm *tm = gmtime(&now.tv_sec);
+                    time_t now_time = (time_t)now.tv_sec;  // Convert to time_t for gmtime
+                    struct tm *tm = gmtime(&now_time);
                     snprintf(dump_file, sizeof(dump_file), "%s/%04d-%02d-%02dT%02d:%02d:%02d.%03dZ.ip_dump", dump_path,
                              1900 + tm->tm_year, tm->tm_mon + 1, tm->tm_mday,
                              tm->tm_hour, tm->tm_min, tm->tm_sec, now.tv_usec / 1000);

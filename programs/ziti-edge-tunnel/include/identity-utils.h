@@ -84,6 +84,8 @@ void set_tun_ipv6_into_instance(const char* tun_ip, int prefixLength, bool addDn
 
 char* get_ip_range_from_config();
 
+char* get_ip6_range_from_config();
+
 const char* get_dns_ip();
 
 bool get_add_dns_flag();

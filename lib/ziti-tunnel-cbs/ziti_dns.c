@@ -14,6 +14,9 @@
  limitations under the License.
  */
 
+// Prevent LWIP from providing byteorder functions to avoid conflicts with system headers
+#define LWIP_DONT_PROVIDE_BYTEORDER_FUNCTIONS 1
+
 #include <ziti/ziti_tunnel.h>
 #include <ziti/ziti_log.h>
 #include <ziti/ziti_dns.h>

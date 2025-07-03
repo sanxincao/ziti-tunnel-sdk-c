@@ -988,14 +988,14 @@ static int run_tunnel(
     printf("-1-g_network_status: IPv4/6: %d\n", g_network_status.is_dual_stack);
 
     if (status.is_dual_stack) {
-        tun = tun_open(ziti_loop, tun_ip4, dns_subnet4, &tun_ip6, &dns_subnet6, tun_error, sizeof(tun_error));
+        tun = tun_open(ziti_loop, tun_ip4, dns_subnet4, &tun_ip6, dns_subnet6, tun_error, sizeof(tun_error));
     }
     else if (status.has_ipv4) {
-        tun = tun_open(ziti_loop, tun_ip4, dns_subnet4, NULL, &dns_subnet6, tun_error, sizeof(tun_error));
+        tun = tun_open(ziti_loop, tun_ip4, dns_subnet4, NULL, dns_subnet6, tun_error, sizeof(tun_error));
     }
     else {
         uint32_t dummy_ip4 = htonl(INADDR_ANY);
-        tun = tun_open(ziti_loop, dummy_ip4, dns_subnet4, &tun_ip6, &dns_subnet6, tun_error, sizeof(tun_error));
+        tun = tun_open(ziti_loop, dummy_ip4, dns_subnet4, &tun_ip6, dns_subnet6, tun_error, sizeof(tun_error));
     }
 
 #else
@@ -1010,10 +1010,10 @@ static int run_tunnel(
     const char *tun_name = tun->get_name(tun->handle);
     if (status.is_dual_stack) {
         set_dns(tun->handle, dns_ip4);
-        set_ip6_dns(tun->handle, *(struct in6_addr*)&dns_ip6);
+        set_ip6_dns(tun->handle, dns_ip6);
     } else if (status.has_ipv4) {
         set_dns(tun->handle, dns_ip4);
-    } else set_ip6_dns(tun->handle, *(struct in6_addr*)&dns_ip6);
+    } else set_ip6_dns(tun->handle, dns_ip6);
     // 设置接口指标为 5
     ZITI_LOG(INFO, "Setting interface metric to 5");
     update_interface_metric(ziti_loop, tun_name, 5);
@@ -1030,7 +1030,7 @@ static int run_tunnel(
             ZITI_LOG(INFO, "DNS is enabled for the TUN interface, because Ziti policies test result in this client is false");
         }
 		
-        set_dns(tun, dns_ip);
+        set_dns(tun->handle, dns_ip4);
         ZITI_LOG(INFO, "Setting interface metric to 5");
         update_interface_metric(ziti_loop, tun_name, 5);
     } else {
@@ -1402,7 +1402,12 @@ static void custom_ip(const char *optarg) {
     char ipv6_cidr[128] = { 0 };
     char* saveptr;
 
-    token = strtok_s(optarg, " ", &saveptr);
+    // 创建 optarg 的副本，因为 strtok_s 会修改字符串
+    char optarg_copy[256];
+    strncpy(optarg_copy, optarg, sizeof(optarg_copy) - 1);
+    optarg_copy[sizeof(optarg_copy) - 1] = '\0';
+
+    token = strtok_s(optarg_copy, " ", &saveptr);
     while (token != NULL) {
         char* cidr = strchr(token, '/');
         if (cidr != NULL) {
@@ -1435,7 +1440,7 @@ static void custom_ip(const char *optarg) {
 }
 
 // 定义全局网络状态
-extern NetworkStatus g_network_status = { 0 };
+NetworkStatus g_network_status = { 0 };
 
 static void net_status(const char* optarg) {
     // 每次调用时重置状态，避免残留旧值

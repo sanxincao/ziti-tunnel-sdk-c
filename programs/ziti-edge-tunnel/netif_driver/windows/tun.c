@@ -695,13 +695,13 @@ int is_windows_10_or_later() {
 }
  
 // 设置 IPv6 DNS
-int set_ip6_dns(netif_handle tun, struct in6_addr dns_ip6) {
+int set_ip6_dns(netif_handle tun, struct ip6_addr dns_ip6) {
     // printf("开始设置ipv6 DNS\n");
     char cmd[2048];
     char dns_ipv6_str[INET6_ADDRSTRLEN];
     const char *tun_name = get_tun_name(tun);
- 
-    // 使用inet_ntop转换in6_addr到字符串
+
+    // 使用inet_ntop转换ip6_addr到字符串
     inet_ntop(AF_INET6, &dns_ip6, dns_ipv6_str, INET6_ADDRSTRLEN);
     ZITI_LOG(INFO, "DNS地址设置为：%s", dns_ipv6_str);
  

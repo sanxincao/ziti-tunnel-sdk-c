@@ -838,7 +838,7 @@ void set_ip6_info(struct ip_addr* dns_ip, struct ip_addr* tun_ip, int bits) {
 
     // 释放旧的 TunIpv6 地址内存
     if (tnl_status.TunIpv6) {
-        free(tnl_status.TunIpv6);
+        free((void*)tnl_status.TunIpv6);
         tnl_status.TunIpv6 = NULL;
     }
 

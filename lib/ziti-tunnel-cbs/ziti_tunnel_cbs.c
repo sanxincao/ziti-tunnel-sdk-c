@@ -22,6 +22,9 @@
 #include <ws2tcpip.h>
 #endif
 
+// Prevent LWIP from providing byteorder functions to avoid conflicts with system headers
+#define LWIP_DONT_PROVIDE_BYTEORDER_FUNCTIONS 1
+
 #include <memory.h>
 #include <stdio.h>
 

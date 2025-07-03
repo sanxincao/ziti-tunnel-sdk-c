@@ -22,6 +22,8 @@
 #include <ws2tcpip.h>
 #endif
 
+// Prevent LWIP from providing byteorder functions to avoid conflicts with system headers
+#define LWIP_DONT_PROVIDE_BYTEORDER_FUNCTIONS 1
 
 #include <stdio.h>
 #include <ziti/ziti_log.h>
@@ -49,7 +51,7 @@ struct hosted_io_ctx_s {
     const char *computed_dst_protocol;
     const char *computed_dst_ip_or_hn;
     const char *computed_dst_port;
-    char resolved_dst[80];
+    char resolved_dst[256];  // Increased size to prevent truncation warnings
     union {
         uv_tcp_t tcp;
         uv_udp_t udp;
@@ -772,7 +774,8 @@ static void on_hosted_client_connect_resolved(uv_getaddrinfo_t* ai_req, int stat
     } else {
         ZITI_LOG(WARN, "hosted_service[%s] client[%s] getnameinfo failed: %s", io->service->service_name,
                  io->client_identity, uv_strerror(uv_err));
-        strncpy(io->resolved_dst, "<unknown>", sizeof(io->resolved_dst));
+        strncpy(io->resolved_dst, "<unknown>", sizeof(io->resolved_dst) - 1);
+        io->resolved_dst[sizeof(io->resolved_dst) - 1] = '\0';  // Ensure null termination
     }
 
     ZITI_LOG(DEBUG, "hosted_service[%s] client[%s] initiating connection to %s",
