@@ -22,11 +22,14 @@
 #include <ziti/ziti_dns.h>
 #include "ziti_instance.h"
 #include "dns_host.h"
+
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <iphlpapi.h>
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
+#endif
 
 #define MAX_UPSTREAMS 5
 #define MAX_DNS_NAME 256
@@ -140,11 +143,6 @@ struct address {
     char ipv6[INET6_ADDRSTRLEN];   // 存储IPv6地址
 };
 #ifdef _WIN32
-
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <iphlpapi.h>
-#pragma comment(lib, "iphlpapi.lib")
 
 void detect_network_win(NetworkStatus* status) {
     ULONG outBufLen = 15000;
