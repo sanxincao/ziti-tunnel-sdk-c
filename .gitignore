@@ -3,6 +3,7 @@
 /.idea/
 .vs
 gcc
+/vcpkg/
 
 /build-*/
 /build/
