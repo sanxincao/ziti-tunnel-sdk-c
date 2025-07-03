@@ -3223,7 +3223,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 #endif
-
+    printf("zhangtiancheng build test\n");
     commandline_run(&main_cmd, argc, argv);
     return 0;
 }

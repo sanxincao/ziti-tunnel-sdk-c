@@ -1,3 +1,0 @@
-$Format: %(describe:tags)$
-ref: $Format: %D$
-hash: $Format: %h$
