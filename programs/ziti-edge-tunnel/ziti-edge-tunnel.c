@@ -82,6 +82,9 @@ static void scm_service_stop_event(uv_loop_t *loop, void *arg);
 static bool is_host_only();
 static void run_tunneler_loop(uv_loop_t* ziti_loop);
 static tunneler_context initialize_tunneler(netif_driver tun, uv_loop_t* ziti_loop);
+const char* get_backup_config_file_name(void);  
+void increment_ipv6(char *ip, int offset);      
+static char* get_identity_opt(int argc, char *argv[]);
 
 #if _WIN32
 static void move_config_from_previous_windows_backup(uv_loop_t *loop);
@@ -126,6 +129,7 @@ bool uses_config_dir = false;
 static long refresh_metrics = 5000;
 static long metrics_latency = 5000;
 static char *configured_cidr = NULL;
+static char* configured_cidr_ip4 = NULL;
 static char *configured_log_level = NULL;
 static char *configured_proxy = NULL;
 static char *ipc_discriminator = NULL;
@@ -151,7 +155,7 @@ static char eventsockfile[] = "\\\\.\\pipe\\ziti-edge-tunnel-event.sock";
 #elif __unix__ || unix || ( __APPLE__ && __MACH__ )
 #include <grp.h>
 #include <sys/un.h>
-#define SOCKET_PATH "/tmp/.ziti"
+#define SOCKET_PATH "/tmp/.idn"
 static char sockfile[] = SOCKET_PATH "/ziti-edge-tunnel.sock";
 static char eventsockfile[] = SOCKET_PATH "/ziti-edge-tunnel-event.sock";
 #endif
@@ -842,35 +846,178 @@ static char* normalize_host(char* hostname) {
     }
     return hostname_new;
 }
+void expand_ipv6(const char* input, char* output) {
+    unsigned short segments[8] = { 0 };  // 存储8个16位段
+    int segment_count = 0;
+    const char* ptr = input;
+    int skip_index = -1;
 
-static int run_tunnel(uv_loop_t *ziti_loop, uint32_t tun_ip, uint32_t dns_ip, const char *ip_range, const char *dns_upstream) {
+    // 处理每个16位段
+    while (*ptr && segment_count < 8) {
+        if (*ptr == ':') {
+            if (*(ptr + 1) == ':') { // 双冒号，表示省略部分
+                if (skip_index == -1) { // 确保只有一次省略
+                    skip_index = segment_count;
+                    ptr++; // 跳过一个冒号
+                }
+            }
+            ptr++;
+        }
+        else {
+            unsigned int value = 0;
+            sscanf(ptr, "%x", &value);
+            segments[segment_count++] = value;
+            while (*ptr && *ptr != ':') ptr++;
+        }
+    }
+
+    // 处理省略的部分
+    if (skip_index != -1) {
+        int skipped_segments = 8 - segment_count;
+        memmove(&segments[skip_index + skipped_segments], &segments[skip_index], (segment_count - skip_index) * sizeof(unsigned short));
+        memset(&segments[skip_index], 0, skipped_segments * sizeof(unsigned short));
+    }
+
+    // 格式化输出，确保每段是四个字符
+    sprintf(output, "%04x:%04x:%04x:%04x:%04x:%04x:%04x:%04x",
+        segments[0], segments[1], segments[2], segments[3],
+        segments[4], segments[5], segments[6], segments[7]);
+}
+static int run_tunnel(
+    uv_loop_t* ziti_loop, struct ip_addr* tun_ip, struct ip_addr* dns_ip, const char* ip6_range,
+    uint32_t tun_ip4, uint32_t dns_ip4, const char* ip4_range, const char* dns_upstream) {
+    ////printf("开始运行隧道\n");
+    ip6_addr_t dns_ip6;
+    memcpy(dns_ip6.addr, dns_ip->u_addr.ip6.addr, sizeof(dns_ip6.addr));
+    ip6_addr_t tun_ip6;
+    memcpy(tun_ip6.addr, tun_ip->u_addr.ip6.addr, sizeof(tun_ip6.addr));
     netif_driver tun;
-    char tun_error[64];
+    char tun_error[INET6_ADDRSTRLEN];
 
     // remove the host bits from the dns cidr so added routes are valid
-    char dns_subnet[64];
-    ziti_address dns_subnet_zaddr;
-    ziti_address_from_string(&dns_subnet_zaddr, ip_range);
-    struct in_addr *dns_subnet_in = (struct in_addr *)&dns_subnet_zaddr.addr.cidr.ip;
-    uint32_t dns_subnet_u32 = ntohl(dns_subnet_in->s_addr) & (0xFFFFFFFFUL << (32 - dns_subnet_zaddr.addr.cidr.bits)) & 0xFFFFFFFFUL;
-    ip_addr_t dns_ip4_addr = IPADDR4_INIT(htonl(dns_subnet_u32));
-    snprintf(dns_subnet, sizeof(dns_subnet), "%s/%d", ipaddr_ntoa(&dns_ip4_addr), dns_subnet_zaddr.addr.cidr.bits);
+    char dns_subnet6[128];
+    char dns_subnet[128];
+    char dns_subnet4[64];
+    char ipaddr[128];
+    ziti_address dns_subnet4_zaddr;
+    ziti_address_from4_string(&dns_subnet4_zaddr, ip4_range);
+    struct in_addr* dns_subnet4_in = (struct in_addr*)&dns_subnet4_zaddr.addr.cidr.ip;
+    uint32_t dns_subnet4_u32 = ntohl(dns_subnet4_in->s_addr) & (0xFFFFFFFFUL << (32 - dns_subnet4_zaddr.addr.cidr.bits)) & 0xFFFFFFFFUL;
+    ip_addr_t dns_ip4_addr = IPADDR4_INIT(htonl(dns_subnet4_u32));
+    snprintf(dns_subnet4, sizeof(dns_subnet4), "%s/%d", ipaddr_ntoa(&dns_ip4_addr), dns_subnet4_zaddr.addr.cidr.bits);
+
+
+    ziti_address dns_subnet6_zaddr;
+    //const int _bits = 121;
+    int bits;
+    if (sscanf(ip6_range, "%39[^/]/%d", ipaddr, &bits) != 2) {
+        printf("Failed to parse IP range and bits\n");
+        return -1;
+    }
+    ////printf("parsede ipaddr: %s\n", ipaddr);//right
+    expand_ipv6(ipaddr, dns_subnet);
+    //dns_subnet6_zaddr.addr.cidr.bits = _bits;
+    dns_subnet6_zaddr.addr.cidr.bits = bits;
+    snprintf(dns_subnet6, sizeof(dns_subnet6), "%s/%d", dns_subnet, dns_subnet6_zaddr.addr.cidr.bits);
+    // 输出最终的子网地址
+    // ZITI_LOG(INFO, "tun_ip4: %s", ipaddr_ntoa(&tun_ip4));
+    // ZITI_LOG(INFO, "tun_ip6: %s", ip6addr_ntoa(&tun_ip6));
+    // ZITI_LOG(INFO, "dns_subnet4: %s", dns_subnet4);
+    // ZITI_LOG(INFO, "dns_subnet6: %s", dns_subnet6);
+
 #if __APPLE__ && __MACH__
     tun = utun_open(tun_error, sizeof(tun_error), ip_range);
 #elif __linux__
-    tun = tun_open(ziti_loop, tun_ip, dns_ip, dns_subnet, tun_error, sizeof(tun_error));
+    // 调用方需预先分配内存
+    NetworkStatus status = g_network_status;
+    //NetworkStatus status = detect_network_support();  
+    // printf("双栈环境 : %s\n", status.is_dual_stack? "✅" : "❌");
+    // printf("ipv4单栈环境 : %s\n", status.has_ipv4 ? "✅" : "❌");
+    // printf("ipv6单栈环境 : %s\n", status.has_ipv6 ? "✅" : "❌");
+    if (status.has_ipv4 && status.has_ipv6) {
+        printf("双栈环境 : ✅\n");
+        tun = tun_open(
+            ziti_loop,
+            &tun_ip4,        // IPv4隧道地址（指针）
+            &dns_ip4,        // IPv4 DNS地址（指针）
+            dns_subnet4,     // IPv4 DNS子网
+            &tun_ip6,        // IPv6隧道地址（指针）
+            &dns_ip6,        // IPv6 DNS地址（指针）
+            dns_subnet6,     // IPv6 DNS子网
+            tun_error,
+            sizeof(tun_error)
+        );
+    } else if (status.has_ipv4) {
+        printf("IPv4单栈环境 : ✅\n");
+        tun = tun_open(
+            ziti_loop,
+            &tun_ip4,        // IPv4隧道地址（指针）
+            &dns_ip4,        // IPv4 DNS地址（指针）
+            dns_subnet4,
+            NULL,            // 不配置IPv6隧道地址
+            &dns_ip6,            // 不配置IPv6 DNS地址
+            dns_subnet6,            // 不配置IPv6子网
+            tun_error,
+            sizeof(tun_error)
+        );
+    } else if (status.has_ipv6) {
+        printf("IPv6单栈环境 : ✅\n");
+        tun = tun_open(
+            ziti_loop,
+            NULL,            // 不配置IPv4隧道地址
+            &dns_ip4,            // 不配置IPv4 DNS地址
+            dns_subnet4,
+            &tun_ip6,        // IPv6隧道地址（指针）
+            &dns_ip6,        // IPv6 DNS地址（指针）
+            dns_subnet6,     // IPv6 DNS子网
+            tun_error,
+            sizeof(tun_error)
+        );
+    } else {
+        printf("无可用网络 : ❌\n");
+        // 处理无网络场景
+    }
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // 假设 tun_ip 和 dns_ip 是 struct ip6_addr 类型的变量
+    //tun = tun_open(ziti_loop, tun_ip4, dns_ip4, dns_subnet4, *(struct ip6_addr *)tun_ip, *(struct ip6_addr *)dns_ip, dns_subnet6, tun_error, sizeof(tun_error));
 #elif _WIN32
-    tun = tun_open(ziti_loop, tun_ip, dns_subnet, tun_error, sizeof(tun_error));
-#else
-#error "ziti-edge-tunnel is not supported on this system"
-#endif
+    ZITI_LOG(INFO, "create tun");
+    NetworkStatus status = g_network_status;
+    printf("-1-g_network_status: IPv4: %d\n", g_network_status.has_ipv4);  
+    printf("-1-g_network_status: IPv6: %d\n", g_network_status.has_ipv6); 
+    printf("-1-g_network_status: IPv4/6: %d\n", g_network_status.is_dual_stack);
 
-    if (tun == NULL) {
+    if (status.is_dual_stack) {
+        tun = tun_open(ziti_loop, tun_ip4, dns_subnet4, &tun_ip6, &dns_subnet6, tun_error, sizeof(tun_error));
+    }
+    else if (status.has_ipv4) {
+        tun = tun_open(ziti_loop, tun_ip4, dns_subnet4, NULL, &dns_subnet6, tun_error, sizeof(tun_error));
+    }
+    else {
+        uint32_t dummy_ip4 = htonl(INADDR_ANY);
+        tun = tun_open(ziti_loop, dummy_ip4, dns_subnet4, &tun_ip6, &dns_subnet6, tun_error, sizeof(tun_error));
+    }
+
+#else
+#error "idn-edge-tunnel is not supported on this system"
+#endif 
+    if(tun == NULL) {
         ZITI_LOG(ERROR, "failed to open network interface: %s", tun_error);
         return 1;
     }
 
 #if _WIN32
+    const char *tun_name = tun->get_name(tun->handle);
+    if (status.is_dual_stack) {
+        set_dns(tun->handle, dns_ip4);
+        set_ip6_dns(tun->handle, *(struct in6_addr*)&dns_ip6);
+    } else if (status.has_ipv4) {
+        set_dns(tun->handle, dns_ip4);
+    } else set_ip6_dns(tun->handle, *(struct in6_addr*)&dns_ip6);
+    // 设置接口指标为 5
+    ZITI_LOG(INFO, "Setting interface metric to 5");
+    update_interface_metric(ziti_loop, tun_name, 5);
+/*
     const char *tun_name = tun->get_name(tun->handle);
     char* zet_id = get_zet_instance_id(ipc_discriminator);
     bool nrpt_effective = is_nrpt_policies_effective(get_dns_ip(), zet_id);
@@ -882,6 +1029,7 @@ static int run_tunnel(uv_loop_t *ziti_loop, uint32_t tun_ip, uint32_t dns_ip, co
         if (!nrpt_effective && !get_add_dns_flag()) {
             ZITI_LOG(INFO, "DNS is enabled for the TUN interface, because Ziti policies test result in this client is false");
         }
+		
         set_dns(tun, dns_ip);
         ZITI_LOG(INFO, "Setting interface metric to 5");
         update_interface_metric(ziti_loop, tun_name, 5);
@@ -893,11 +1041,15 @@ static int run_tunnel(uv_loop_t *ziti_loop, uint32_t tun_ip, uint32_t dns_ip, co
 #else
     set_tun_name(tun->get_name(tun->handle)); //sets the tunnel status's, tun name...
 #endif
+*/
+#endif
+    char dns_ipv6_str[INET6_ADDRSTRLEN];
 
+    // Convert IPv6 address to string
+    ip6addr_ntoa_r(&dns_ip6, dns_ipv6_str, INET6_ADDRSTRLEN);
+    ip_addr_t dns_ipv4 = IPADDR4_INIT(dns_ip4);
     tunneler = initialize_tunneler(tun, ziti_loop);
-
-    ip_addr_t dns_ip4 = IPADDR4_INIT(dns_ip);
-    ziti_dns_setup(tunneler, ipaddr_ntoa(&dns_ip4), ip_range);
+    ziti_dns_setup(tunneler, ipaddr_ntoa(&dns_ipv4), ip4_range, dns_ipv6_str, ip6_range);
     if (dns_upstream) {
         tunnel_upstream_dns upstream = {
                 .host = dns_upstream
@@ -905,9 +1057,6 @@ static int run_tunnel(uv_loop_t *ziti_loop, uint32_t tun_ip, uint32_t dns_ip, co
         tunnel_upstream_dns *a[] = { &upstream, NULL};
         ziti_dns_set_upstream(ziti_loop, a);
     }
-#if __linux__
-    diverter_init(dns_ip4_addr.u_addr.ip4.addr, dns_subnet_zaddr.addr.cidr.bits, tun->get_name(tun->handle));
-#endif
     run_tunneler_loop(ziti_loop);
     if (tun->close) {
         tun->close(tun->handle);
@@ -924,7 +1073,7 @@ static int run_tunnel_host_mode(uv_loop_t *ziti_loop) {
 static int make_socket_path(uv_loop_t *loop) {
 
 #if defined(SOCKET_PATH)
-#define ZITI_GRNAME "ziti"
+#define ZITI_GRNAME "idn"
     uv_fs_t req;
     int rc;
 
@@ -1178,8 +1327,12 @@ static struct option run_host_options[] = {
 };
 
 #ifndef DEFAULT_DNS_CIDR
-#define DEFAULT_DNS_CIDR "100.64.0.1/10"
+#define DEFAULT_DNS_CIDR "2408:3:2:1::/106"
 #endif
+#ifndef DEFAULT_DNS4_CIDR
+#define DEFAULT_DNS4_CIDR "208.64.0.1/10"
+#endif
+
 static const char* dns_upstream = NULL;
 static bool host_only = false;
 
@@ -1228,17 +1381,102 @@ static int init_proxy_connector(const char *url) {
     return 0;
 }
 
+// 判断IPv4地址
+static int is_ipv4(const char* token) {
+    struct sockaddr_in sa;
+    // Try to convert token to an IPv4 address. If it succeeds, return 1 (true).
+    return inet_pton(AF_INET, token, &(sa.sin_addr)) == 1;
+}
+
+// 判断IPv6地址
+static int is_ipv6(const char* token) {
+    struct sockaddr_in6 sa6;
+    // Try to convert token to an IPv6 address. If it succeeds, return 1 (true).
+    return inet_pton(AF_INET6, token, &(sa6.sin6_addr)) == 1;
+}
+
+
+static void custom_ip(const char *optarg) {
+    char* token;
+    char ipv4_cidr[128] = { 0 };
+    char ipv6_cidr[128] = { 0 };
+    char* saveptr;
+
+    token = strtok_s(optarg, " ", &saveptr);
+    while (token != NULL) {
+        char* cidr = strchr(token, '/');
+        if (cidr != NULL) {
+            *cidr = '\0'; 
+            cidr++;       
+        }
+        if (is_ipv4(token)) {
+            strncpy(ipv4_cidr, token, sizeof(ipv4_cidr) - 1);
+            if (cidr) strncat(ipv4_cidr, "/", sizeof(ipv4_cidr) - strlen(ipv4_cidr) - 1);
+            if (cidr) strncat(ipv4_cidr, cidr, sizeof(ipv4_cidr) - strlen(ipv4_cidr) - 1);
+            printf("Configured IPv4 CIDR: %s\n", ipv4_cidr);
+            configured_cidr_ip4 = strdup(ipv4_cidr);
+        }
+        else if (is_ipv6(token)) {
+            strncpy(ipv6_cidr, token, sizeof(ipv6_cidr) - 1);
+            if (cidr) strncat(ipv6_cidr, "/", sizeof(ipv6_cidr) - strlen(ipv6_cidr) - 1);
+            if (cidr) strncat(ipv6_cidr, cidr, sizeof(ipv6_cidr) - strlen(ipv6_cidr) - 1);
+            printf("Configured IPv6 CIDR: %s\n", ipv6_cidr);
+            configured_cidr = strdup(ipv6_cidr);
+        }
+        else {
+            printf("Invalid IP format: %s\n", token);
+        }
+        token = strtok_s(NULL, " ", &saveptr);
+    }
+    if (ipv4_cidr[0] == '\0' && ipv6_cidr[0] == '\0') {
+        printf("No valid IP address found.\n");
+    }
+
+}
+
+// 定义全局网络状态
+extern NetworkStatus g_network_status = { 0 };
+
+static void net_status(const char* optarg) {
+    // 每次调用时重置状态，避免残留旧值
+    memset(&g_network_status, 0, sizeof(g_network_status));
+
+    if (optarg) {
+        if (strcmp(optarg, "46") == 0 || strcmp(optarg, "64") == 0) {
+            g_network_status.has_ipv4 = 1;
+            g_network_status.has_ipv6 = 1;
+            g_network_status.is_dual_stack = 1;
+        }
+        else if (strcmp(optarg, "4") == 0) {
+            g_network_status.has_ipv4 = 1;
+        }
+        else if (strcmp(optarg, "6") == 0) {
+            g_network_status.has_ipv6 = 1;
+        }
+        else {
+            // 参数无效时回退检测
+            detect_network_win(&g_network_status);
+        }
+    }
+    else {
+        // 无参数时执行检测
+        detect_network_win(&g_network_status);
+    }
+
+}
+
 static int run_opts(int argc, char *argv[]) {
     int c, option_index, errors = 0;
     optind = 0;
     bool identity_provided = false;
+    bool a_option_used = false; // 新增标志，用于检测是否使用了 -a
 
 #if __linux__
 #define DIVERTER_SHORT_OPTS "D:f:"
 #else
 #define DIVERTER_SHORT_OPTS ""
 #endif
-    while ((c = getopt_long(argc, argv, "i:I:v:r:d:u:x:"DIVERTER_SHORT_OPTS,
+    while ((c = getopt_long(argc, argv, "i:I:v:r:d:u:x:a"DIVERTER_SHORT_OPTS,
                             run_options, &option_index)) != -1) {
         switch (c) {
 #if __linux__
@@ -1267,7 +1505,7 @@ static int run_opts(int argc, char *argv[]) {
                 }
                 config_dir = resolve_directory(optarg);
                 identity_provided = true;
-                uses_config_dir = true;
+               uses_config_dir = true;
                 break;
             case 'v':
                 configured_log_level = optarg;
@@ -1278,7 +1516,7 @@ static int run_opts(int argc, char *argv[]) {
                 break;
             }
             case 'd': // ip range
-                configured_cidr = optarg;
+                custom_ip(optarg);
                 break;
             case 'u':
                 dns_upstream = optarg;
@@ -1286,6 +1524,16 @@ static int run_opts(int argc, char *argv[]) {
             case 'x':
                 configured_proxy = optarg;
                 break;
+            case 'a': {
+                const char* arg = optarg;
+                if (arg == NULL && optind < argc && argv[optind][0] != '-') {
+                    arg = argv[optind];
+                    optind++;
+                }
+                net_status(arg); // 正确调用 net_status 处理参数
+                a_option_used = true;
+                break;
+            }
             default: {
                 fprintf(stderr, "Unknown option '%c'\n", c);
                 errors++;
@@ -1293,15 +1541,18 @@ static int run_opts(int argc, char *argv[]) {
             }
         }
     }
-
+    if (!a_option_used) {
+        detect_network_win(&g_network_status);
+    }
     if (!identity_provided) {
         fprintf(stderr, "at least one -i or -I required\n");
         errors++;
     }
 
     CHECK_COMMAND_ERRORS(errors);
-
-    fprintf(stderr, "About to run tunnel service... %s\n", main_cmd.name);
+    const char *idnname = "ziti-edge-tunnel";
+    fprintf(stderr, "About to run tunnel service... %s\n", idnname);
+    //fprintf(stderr, "About to run tunnel service... %s\n", main_cmd.name);
     ziti_set_app_info(main_cmd.name, ziti_tunneler_version());
 
     return optind;
@@ -1381,6 +1632,35 @@ static void interrupt_handler(int sig) {
 }
 #endif
 
+static void parse_cidr(const char* cidr_str, char* ip, int* prefix) {
+    if (sscanf(cidr_str, "%39[^/]/%d", ip, prefix) != 2) {
+        fprintf(stderr, "Invalid IP range specification: expected address with /prefix format\n");
+        exit(EXIT_FAILURE);
+    }
+}
+static void configure_ip_ranges(const char* ipv4_range, const char* ipv6_range) {
+    char ip[40]; // 用于存储IP地址
+    int prefix; // 用于存储前缀长度
+
+    if (ipv4_range) {
+        parse_cidr(ipv4_range, ip, &prefix);
+        configured_cidr_ip4 = strdup(ipv4_range);
+        //printf("Configured IPv4 CIDR: %s\n", configured_cidr_ip4);
+    } else {
+        configured_cidr_ip4 = strdup(DEFAULT_DNS4_CIDR);
+        //printf("Using default IPv4 CIDR: %s\n", configured_cidr_ip4);
+    }
+
+    if (ipv6_range) {
+        parse_cidr(ipv6_range, ip, &prefix);
+        configured_cidr = strdup(ipv6_range);
+        //printf("Configured IPv6 CIDR: %s\n", configured_cidr);
+    } else {
+        configured_cidr = strdup(DEFAULT_DNS_CIDR);
+        //printf("Using default IPv6 CIDR: %s\n", configured_cidr);
+    }
+}
+
 static void run(int argc, char *argv[]) {
     uv_cond_init(&stop_cond);
     uv_mutex_init(&stop_mutex);
@@ -1401,7 +1681,7 @@ static void run(int argc, char *argv[]) {
 #endif
 
     // generate tunnel status instance and save active state and start time
-    if (config_dir != NULL) {
+    if (config_dir != NULL || configured_cidr_ip4 != NULL) {
         if (config_file == NULL) {
             config_file = calloc(PATH_MAX + 1, sizeof(char));
         }
@@ -1411,39 +1691,110 @@ static void run(int argc, char *argv[]) {
         load_tunnel_status_from_file(config_file);
     }
 
-    uint32_t tun_ip;
-    uint32_t dns_ip;
+    struct ip_addr tun_ip6, dns_ip6;
+    uint32_t tun_ip4, dns_ip4;
 
     if (!is_host_only()) {
-        if (configured_cidr == NULL) {
-            //allow the -d flag to override anything in the config
-            char *ip_range_temp = get_ip_range_from_config();
-            if (ip_range_temp != NULL) {
-                configured_cidr = ip_range_temp;
+        if (configured_cidr == NULL && configured_cidr_ip4 == NULL)  {
+            //允许-d标志覆盖配置中的任何内容
+            char* ip_range_temp = get_ip_range_from_config();
+            char* ip6_range_temp = get_ip6_range_from_config();
+            if (ip_range_temp == NULL && ip6_range_temp == NULL) {
+                ////printf("#3\n");
+                configured_cidr = ip6_range_temp;
+                configured_cidr_ip4 = ip_range_temp;
             } else {
                 configured_cidr = strdup(DEFAULT_DNS_CIDR);
+                configured_cidr_ip4 = strdup(DEFAULT_DNS4_CIDR);
             }
         }
+        int bits = 0;
+        char ipaddr[160];
+        unsigned char mask[8] = { 0 }; // 子网掩码初始化为0
+        if (!configured_cidr) {
+            configured_cidr = strdup(DEFAULT_DNS_CIDR);
+        }
+        if (!configured_cidr_ip4) {
+            configured_cidr_ip4 = strdup(DEFAULT_DNS4_CIDR);
+        }
+        ZITI_LOG(INFO, "ipv6 address = %s\n", configured_cidr);
+        ZITI_LOG(INFO, "ipv4 address = %s\n", configured_cidr_ip4);
+        if (sscanf(configured_cidr, "%39[^/]/%d", ipaddr, &bits) != 2) {
+            fprintf(stderr, "invalid ip range specification: expected ipv6 address with /prefix format\n");
+            exit(EXIT_FAILURE);
+        }
+        ////printf("_+_+%s\n", ipaddr);//right
+        uint64_t mask_high = 0xFFFFFFFFFFFFFFFFULL;  // First 64 bits mask
+        uint64_t mask_low = 0xFFFFFFFF00000000ULL;   // Last 64 bits mask for /96
+
+        ip6_addr_t subnet;
+        if (!inet_pton(AF_INET6, ipaddr, &subnet.addr)) {
+            fprintf(stderr, "Invalid IPv6 address format\n");
+            exit(EXIT_FAILURE);
+        }
+
+        // Apply subnet mask
+        subnet.addr[0] &= htonl(mask_high >> 32);
+        subnet.addr[1] &= htonl(mask_high & 0xFFFFFFFF);
+        subnet.addr[2] &= htonl(mask_low >> 32);
+        subnet.addr[3] &= htonl(mask_low & 0xFFFFFFFF);
+
+        char ipaddr6[INET6_ADDRSTRLEN];
+        inet_ntop(AF_INET6, &subnet, ipaddr6, INET6_ADDRSTRLEN);
+        ////printf("_+_+subnet=%s\n", ipaddr6);  // Correct output
+
+        char ctun_ip[40];
+        int i = 1;
+        strcpy(ctun_ip, ipaddr6);
+        increment_ipv6(ctun_ip, i);  // Increment TUN IP by 1
+        ////printf("_+_+ctun_ip=%s\n", ctun_ip);
+        i++;
+        char cdns_ip[40];
+        strcpy(cdns_ip, ipaddr6);
+        increment_ipv6(cdns_ip, i);  // Increment DNS IP by 2
+        ////printf("_+_+cdns_ip=%s\n", cdns_ip);
+        ip_addr_t tunip6, dnsip6;
+        ipaddr_aton(ctun_ip, &tunip6);
+        ipaddr_aton(cdns_ip, &dnsip6);
+        ////printf("_+_+ctun_ip=%s\n", ctun_ip); // wrong
+        ip_addr_set(&tun_ip6, &tunip6);
+        ip_addr_set(&dns_ip6, &dnsip6);
+
+        set_ip6_info(&dns_ip6, &tun_ip6, bits);//传递的值有问题
 
         uint32_t ip[4];
-        int bits;
-        int rc = sscanf(configured_cidr, "%d.%d.%d.%d/%d", &ip[0], &ip[1], &ip[2], &ip[3], &bits);
+        int v4bits;
+        int rc = sscanf(configured_cidr_ip4, "%d.%d.%d.%d/%d", &ip[0], &ip[1], &ip[2], &ip[3], &v4bits);
         if (rc != 5) {
             ZITI_LOG(ERROR, "Invalid IP range specification: n.n.n.n/m format is expected");
             exit(EXIT_FAILURE);
         }
 
-        uint32_t mask = 0;
+        uint32_t ipv4_mask = 0;
         for (int i = 0; i < 4; i++) {
-            mask <<= 8U;
-            mask |= (ip[i] & 0xFFU);
+            ipv4_mask <<= 8U;
+            ipv4_mask |= (ip[i] & 0xFFU);
         }
 
-        tun_ip = htonl(mask);
-        dns_ip = htonl(mask + 1);
+        tun_ip4 = htonl(ipv4_mask);
+        dns_ip4 = htonl(ipv4_mask + 1);
+
+        uint32_t tun_ip4 = htonl(ipv4_mask);
+        uint32_t dns_ip4 = htonl(ipv4_mask + 1);
+
+        // Convert uint32_t IP address to struct in_addr
+        struct in_addr tun_ip4_addr;
+        tun_ip4_addr.s_addr = tun_ip4;
+
+        struct in_addr dns_ip4_addr;
+        dns_ip4_addr.s_addr = dns_ip4;
+
+        // Output IP addresses in string format
+        ////printf("out-tun_ip4: %s\n", inet_ntoa(tun_ip4_addr));
+        ////printf("out-dns_ip4: %s\n", inet_ntoa(dns_ip4_addr));
 
         // set ip info into instance
-        set_ip_info(dns_ip, tun_ip, bits);
+        set_ip_info(dns_ip4, tun_ip4, v4bits);
     }
 #if __unix__ || __unix
     // prevent termination when running under valgrind
@@ -1495,7 +1846,7 @@ static void run(int argc, char *argv[]) {
     uv_timeval64_t dump_time;
     uv_gettimeofday(&dump_time);
     char time_str[32];
-    struct tm* start_tm = gmtime(&dump_time.tv_sec);
+    struct tm* start_tm = localtime(&dump_time.tv_sec);
     strftime(time_str, sizeof(time_str), "%Y-%m-%dT%H:%M:%S", start_tm);
 
     start_tm = localtime(&dump_time.tv_sec);
@@ -1506,7 +1857,7 @@ static void run(int argc, char *argv[]) {
     if(config_file != NULL) {
         ZITI_LOG(INFO, "	- config file      : %s", config_file);
     }
-    ZITI_LOG(INFO,"	- initialized at   : %s (local time), %s (UTC)", time_val, time_str);
+    ZITI_LOG(INFO,"	- initialized at   : %s (local time), %s (CST)", time_val, time_str);
     ZITI_LOG(INFO,"	- log file location: %s", get_log_file_name());
     char *csdk_version = "" to_str(ZITI_VERSION) ":" to_str(ZITI_BRANCH) "@" to_str(ZITI_COMMIT);
     ZITI_LOG(INFO,"	- C SDK Version    : %s", csdk_version);
@@ -1544,7 +1895,9 @@ static void run(int argc, char *argv[]) {
     if (is_host_only()) {
         rc = run_tunnel_host_mode(global_loop_ref);
     } else {
-        rc = run_tunnel(global_loop_ref, tun_ip, dns_ip, configured_cidr, dns_upstream);
+        ZITI_LOG(INFO, "not host");
+        rc = run_tunnel(global_loop_ref, &tun_ip6, &dns_ip6, configured_cidr,
+            tun_ip4, dns_ip4, configured_cidr_ip4, dns_upstream);
     }
     exit(rc);
 }
@@ -1599,12 +1952,13 @@ static int parse_enroll_opts(int argc, char *argv[]) {
         { "cert", required_argument, NULL, 'c'},
         { "name", required_argument, NULL, 'n'},
         { "proxy", required_argument, NULL, 'x' },
+        { "verbose", no_argument, NULL, 'v'},
     };
     int c, option_index, errors = 0;
     const char *proxy_arg = NULL;
     optind = 0;
 
-    while ((c = getopt_long(argc, argv, "j:i:Kk:c:n:x:u:",
+    while ((c = getopt_long(argc, argv, "j:i:Kk:c:n:x:u:v",
                             opts, &option_index)) != -1) {
         switch (c) {
             case 'u':
@@ -2315,6 +2669,7 @@ static int update_tun_ip_opts(int argc, char *argv[]) {
     optind = 0;
 
     tunnel_tun_ip_v4 *tun_ip_v4_options = calloc(1, sizeof(tunnel_tun_ip_v4));
+    tunnel_tun_ip_v6* tun_ip_v6_options = calloc(1, sizeof(tunnel_tun_ip_v6));
     cmd.command = TunnelCommand_UpdateTunIpv4;
 
     while ((c = getopt_long(argc, argv, "t:p:d:",
@@ -2536,11 +2891,11 @@ static int add_identity_opts(int argc, char *argv[]) {
 }
 
 static CommandLine enroll_cmd = make_command(
-    "enroll", "enroll Ziti identity",
+    "enroll", "enroll Idn identity",
     "( -u|--url <controller URL> | -j|--jwt <enrollment token> ) -i|--identity <identity> [-k|--key <private_key> [-c|--cert <certificate>]] [-n|--name <name>]",
     "\t-u|--url\tenroll with controller (3rd party IDP required for auth). Ignored if --jwt is provided\n"
     "\t-j|--jwt\tenrollment token file\n"
-    "\t-x|--proxy type://[username[:password]@]hostname_or_ip:port\tproxy to use when connecting to OpenZiti controller. 'http' is currently the only supported type.\n"
+    "\t-x|--proxy type://[username[:password]@]hostname_or_ip:port\tproxy to use when connecting to Idn controller. 'http' is currently the only supported type.\n"
     "\t-i|--identity\toutput identity file\n"
     "\t-K|--use-keychain\tuse keychain to generate/store private key\n"
     "\t-k|--key\tprivate key for enrollment\n"
@@ -2557,25 +2912,24 @@ static CommandLine enroll_cmd = make_command(
 #define DIVERTER_OPTS_DETAIL ""
 #endif
 
-static CommandLine run_cmd = make_command("run", "run Ziti tunnel (required superuser access)",
+static CommandLine run_cmd = make_command("run", "run Idn tunnel (required superuser access)",
                                           "-i <id.file> [-r N] [-v N] [-d|--dns-ip-range N.N.N.N/N] " DIVERTER_OPTS_SUMMARY "[-u|--dns-upstream N.N.N.N]\n",
                                           "\t-i|--identity <identity>\trun with provided identity file (required)\n"
                                           "\t-I|--identity-dir <dir>\tload identities from provided directory\n"
                                           "\t-x|--proxy type://[username[:password]@]hostname_or_ip:port\tproxy to use when"
-                                          " connecting to OpenZiti controller and edge routers. 'http' is currently the only supported type.\n"
+                                          " connecting to Idn controller and edge routers. 'http' is currently the only supported type.\n"
                                           "\t-v|--verbose N\tset log level, higher level -- more verbose (default 3)\n"
                                           "\t-r|--refresh N\tset service polling interval in seconds (default 10)\n"
-                                          "\t-d|--dns-ip-range <ip range>\tspecify CIDR block in which service DNS names"
-                                          " are assigned in N.N.N.N/n format (default " DEFAULT_DNS_CIDR ")\n"
-                                          DIVERTER_OPTS_DETAIL
+                                          " (default "DEFAULT_DNS4_CIDR DEFAULT_DNS_CIDR")\n"
+                                          "\t-ip|--networkstatus\tip 46/4/6\n"
                                           "\t-u|--dns-upstream <ip addr>\tresolver listening on 53/udp for DNS queries that do not match a Ziti service\n",
                                           run_opts, run);
-static CommandLine run_host_cmd = make_command("run-host", "run Ziti tunnel to host services",
+static CommandLine run_host_cmd = make_command("run-host", "run Idn tunnel to host services",
                                           "-i <id.file> [-r N] [-v N]",
                                           "\t-i|--identity <identity>\trun with provided identity file (required)\n"
                                           "\t-I|--identity-dir <dir>\tload identities from provided directory\n"
                                           "\t-x|--proxy type://[username[:password]@]hostname_or_ip:port\tproxy to use when"
-                                          " connecting to OpenZiti controller and edge routers"
+                                          " connecting to Idn controller and edge routers"
                                           "\t-v|--verbose N\tset log level, higher level -- more verbose (default 3)\n"
                                           "\t-r|--refresh N\tset service polling interval in seconds (default 10)\n",
                                           run_host_opts, run);
@@ -2679,9 +3033,9 @@ static CommandLine *main_cmds[] = {
 
 static CommandLine main_cmd = make_command_set(
         NULL,
-        "Ziti Tunnel App",
-        "<command> [<args>]", "to get help for specific command run 'ziti-edge-tunnel help <command>' "
-                              "or 'ziti-edge-tunnel <command> -h'",
+        "Idn Tunnel App",
+        "<command> [<args>]", "to get help for specific command run 'idn-edge-tunnel help <command>' "
+                              "or 'idn-edge-tunnel <command> -h'",
         NULL, main_cmds);
 
 #if _WIN32
@@ -2848,7 +3202,6 @@ int main(int argc, char *argv[]) {
     } else {
         name = name + 1;
     }
-
     global_loop_ref = uv_default_loop();
     if (global_loop_ref == NULL) {
         printf("failed to initialize default uv loop"); //can't use ZITI_LOG here
@@ -2862,6 +3215,7 @@ int main(int argc, char *argv[]) {
     // if service is started by SCM, SvcStart will return only when it receives the stop request
     // started_by_scm will be set to true only if scm initializes the config value
     // if the service is started from cmd line, SvcStart will return immediately and started_by_scm will be set to false. In this case tunnel can be run normally
+    
     if (started_by_scm) {
         main_cmd.name = "Ziti Desktop Edge for Windows"; // when running as a service - it must have been installed by
                                                          // the ZDEW installer so let's use that name here

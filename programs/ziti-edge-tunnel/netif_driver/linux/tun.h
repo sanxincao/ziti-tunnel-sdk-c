@@ -28,6 +28,16 @@ struct netif_handle_s {
     model_map *route_updates;
 };
 
-extern netif_driver tun_open(struct uv_loop_s *loop, uint32_t tun_ip, uint32_t dns_ip, const char *cidr, char *error, size_t error_len);
+extern netif_driver tun_open(
+    uv_loop_t *loop,
+    const uint32_t *tun_ip4,
+    const uint32_t *dns_ip4,
+    const char *dns_block4,
+    const struct ip6_addr *tun_ip6,
+    const struct ip6_addr *dns_ip6,
+    const char *dns_block6,
+    char *error,
+    size_t error_len
+);
 
 #endif //ZITI_TUNNELER_SDK_TUN_H

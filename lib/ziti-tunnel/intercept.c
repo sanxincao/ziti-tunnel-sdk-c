@@ -30,13 +30,47 @@ bool protocol_match(const char *protocol, const protocol_list_t *protocols) {
     return false;
 }
 
-bool ziti_address_from_string(ziti_address *za, const char *hn_or_cidr) {
+bool ziti_address_from4_string(ziti_address *za, const char *hn_or_cidr) {
     size_t json_buflen = strlen(hn_or_cidr) + 3;
     char *json = calloc(json_buflen, sizeof(char));
     snprintf(json, json_buflen, "\"%s\"", hn_or_cidr);
     int n = parse_ziti_address(za, json, json_buflen);
     free(json);
     return n > 0;
+}
+
+bool ziti_address_from_string(ziti_address *za, const char *hn_or_cidr) {
+    //typedef unsigned __int64 size_t;
+    size_t json_buflen = strlen(hn_or_cidr) + 3;
+    char *json = calloc(json_buflen, sizeof(char));
+    snprintf(json, json_buflen, "%s", hn_or_cidr);
+    //int n = parse_ziti_address(za, json, json_buflen);
+    parse6_ziti_address(za, json, json_buflen);
+    free(json);
+    return 0;
+}
+
+void parse6_ziti_address(ziti_address* za, const char* json, int json_buflen) {
+    int bits;
+    char ipaddr[40];
+    sscanf(json, "%39[^/]/%d", ipaddr, &bits);
+    ziti_address_from_ip6_addr(za, ipaddr);
+    struct in_addr* zin = (struct in6_addr *)calloc(1, sizeof(json_buflen));
+    zin = &za->addr.cidr.ip;
+}
+
+void print_address_list(address_list_t *addresses) {
+    address_t *addr_entry;
+    char address_buf[128]; // 假设缓冲区足够大
+
+    // 使用链表遍历每个地址
+    STAILQ_FOREACH(addr_entry, addresses, entries) {
+        if (ziti_address_print(address_buf, sizeof(address_buf), &addr_entry->za) > 0) {
+            //printf("11,for match_addr地址: %s\n", address_buf);
+        } else {
+            //printf("11,无法打印 address_t 结构中的 ziti_address\n");
+        }
+    }
 }
 
 void ziti_address_from_in_addr(ziti_address *za, const struct in_addr *a) {

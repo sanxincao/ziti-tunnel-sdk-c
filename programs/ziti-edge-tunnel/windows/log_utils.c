@@ -45,7 +45,7 @@ static void delete_older_logs(uv_async_t *ar);
 static FILE *ziti_tunneler_log = NULL;
 static uv_check_t *log_flusher;
 static struct tm *start_time;
-static const char* log_filename_base = "ziti-tunneler.log";
+static const char* log_filename_base = "idn-tunneler.log";
 static int rotation_count = 7;
 
 static uint8_t mkdir_p(const char *path) {
@@ -160,7 +160,7 @@ bool log_init(uv_loop_t *ziti_loop, int level, log_writer log_func) {
     uv_timeval64_t file_time;
     uv_gettimeofday(&file_time);
     start_time = calloc(1, sizeof(struct tm));
-    _gmtime64_s(start_time, &file_time.tv_sec);
+    _localtime64_s(start_time, &file_time.tv_sec);
 
     uv_async_t *ar_delete = calloc(1, sizeof(uv_async_t));
     uv_async_init(ziti_loop, ar_delete, delete_older_logs);

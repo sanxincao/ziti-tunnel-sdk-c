@@ -433,7 +433,7 @@ static const char *compute_dst_ip_or_hn(const host_ctx_t *service, const tunnele
     }
 
     ziti_address dst;
-    if (!ziti_address_from_string(&dst, ip_or_hn)) {
+    if (!ziti_address_from4_string(&dst, ip_or_hn)) {
         snprintf(err, err_sz, "failed to parse %s", ip_or_hn);
         return NULL;
     }

@@ -70,12 +70,12 @@ struct ziti_intercept_s {
 
 static struct cfgtype_desc_s intercept_cfgtypes[] = {
         CFGTYPE_DESC("intercept.v1", INTERCEPT_CFG_V1, ziti_intercept_cfg_v1),
-        CFGTYPE_DESC("ziti-tunneler-client.v1", CLIENT_CFG_V1, ziti_client_cfg_v1)
+        CFGTYPE_DESC("idn-tunneler-client.v1", CLIENT_CFG_V1, ziti_client_cfg_v1)
 };
 
 static struct cfgtype_desc_s host_cfgtypes[] = {
         CFGTYPE_DESC("host.v1", HOST_CFG_V1, ziti_host_cfg_v1),
-        CFGTYPE_DESC("ziti-tunneler-server.v1", SERVER_CFG_V1, ziti_server_cfg_v1)
+        CFGTYPE_DESC("idn-tunneler-server.v1", SERVER_CFG_V1, ziti_server_cfg_v1)
 };
 
 static void free_ziti_intercept(ziti_intercept_t *zi) {
@@ -445,36 +445,121 @@ static const ziti_address *intercept_match_addr(ip_addr_t *addr, void *ctx) {
     return NULL;
 }
 
-static const ziti_address  *intercept_addr_from_cfg_addr(const ziti_address *cfg_addr, ziti_intercept_t *zi) {
-    static ziti_address dns_addr;
-    const ziti_address *intercept_addr_p = NULL;
+static const interp *intercept_addr_from_cfg_addr(const ziti_address *cfg_addr, ziti_intercept_t *zi) {
+    static interp double_addr;
+    static ziti_address saved_ip4, saved_ip6, saved_ip;  // 静态存储用于持久化IP地址
+    const interp* intercept_addr_p = NULL;
+
 
     if (cfg_addr->type == ziti_address_cidr) {
-        intercept_addr_p = cfg_addr;
-    } else if (cfg_addr->type == ziti_address_hostname) {
-        const ip_addr_t *intercept_ip = ziti_dns_register_hostname(cfg_addr, zi);
-        if (intercept_ip) {
-            intercept_addr_p = &dns_addr;
-            ziti_address_from_ip_addr(&dns_addr, intercept_ip);
-        }
-    } else {
-        ZITI_LOG(WARN, "unknown ziti_address type %d", cfg_addr->type);
-    }
+        saved_ip = *cfg_addr;  // 保存CIDR地址
+        double_addr.ip = &saved_ip;  // 指向保存的地址
+        intercept_addr_p = &double_addr;
 
+    } else if (cfg_addr->type == ziti_address_hostname) {
+        const _46double* intercept_ip = ziti_dns_register_hostname(cfg_addr, zi);
+        if (intercept_ip) {
+            ziti_address_from_ip4_addr(&saved_ip4, &intercept_ip->addr);
+            ziti_address_from_ip6_addr(&saved_ip6, &intercept_ip->addr6);
+
+            double_addr.ip4 = &saved_ip4;
+            double_addr.ip6 = &saved_ip6;
+            intercept_addr_p = &double_addr;
+        }
+    }
+    else {
+        ZITI_LOG(WARN, "unknown idn_address type %d", cfg_addr->type);
+    }
     return intercept_addr_p;
 }
 
+static const interp *intercept_addr6_from_cfg_addr(const ziti_address *cfg_addr, ziti_intercept_t *zi) {
+    //printf("三传：%p\n", cfg_addr);
+    interp* result = calloc(1, sizeof(interp)); // // 用于存储从主机名解析得到的地址
+    if (result == NULL) {
+        //printf("三传1：%p\n");
+        // 处理内存分配失败的情况
+        free(result);
+        return NULL;
+    }
+    static ziti_address dns_addr4, dns_addr6;
+    // 用于保存最终的拦截地址
+    const ziti_address* intercept_addr = NULL;
+    const ziti_address* intercept_addr_p4 = NULL;
+    const ziti_address* intercept_addr_p6 = NULL;
+
+    if (cfg_addr->type == ziti_address_cidr) {
+        // 如果是CIDR地址类型，直接使用配置地址
+        intercept_addr = cfg_addr;
+        char za_str[128];
+        ziti_address_print(za_str, sizeof(za_str), intercept_addr);
+        //printf("cidr的类型：%s\n", za_str);
+    } else if (cfg_addr->type == ziti_address_hostname) {
+        // 如果是主机名类型，进行DNS解析
+        const _46double* dns_result = ziti_dns_register_hostname(cfg_addr, zi);
+        if (dns_result == NULL) {
+            ZITI_LOG(ERROR, "DNS resolution failed for hostname: %s", cfg_addr->addr.hostname);
+            free(result);  // 释放已分配的内存
+            return NULL;
+        }
+        const ip4_addr_t* intercept_ip4 = &dns_result->addr;
+        const ip6_addr_t* intercept_ip6 = &dns_result->addr6;
+        ZITI_LOG(DEBUG, "三传出来转换成的za类型，正确");
+
+        memset(&dns_addr6, 0, sizeof(ziti_address));
+        memset(&dns_addr4, 0, sizeof(ziti_address));
+        if (intercept_ip4 && intercept_ip6) {
+            intercept_addr_p6 = &dns_addr6;
+            intercept_addr_p4 = &dns_addr4;
+            ziti_address_from_ip6_addr(&dns_addr6, (const ip6_addr_t*)intercept_ip6); // 注意强制类型转换
+            ziti_address_from_ip4_addr(&dns_addr4, (const ip4_addr_t*)intercept_ip4); // 注意方法名称和类型
+
+    } else {
+        // 如果地址类型未知，记录警告日志
+        ZITI_LOG(WARN, "unknown idn_address type %d", cfg_addr->type);
+        free(result);  // 释放已分配的内存
+        return NULL;
+    }
+    //intercept_addr_p = "2408:8631 : C02 : FFE2::100 : 320 / 128";
+    if (intercept_addr_p4 && intercept_addr_p6) {
+        result->ip4 = intercept_addr_p4;
+        result->ip6 = intercept_addr_p6;
+        result->ip = intercept_addr;
+    }
+    else {
+        ZITI_LOG(ERROR, "No valid intercept addresses found");
+        free(result);  // 释放已分配的内存
+        return NULL;
+    }
+    if (result->ip) {
+        char za_str[128];
+        ziti_address_print(za_str, sizeof(za_str), result->ip);
+    } else {
+        return NULL;
+    }
+    return result;
+    }
+}
 intercept_ctx_t *new_intercept_ctx(tunneler_context tnlr_ctx, ziti_intercept_t *zi_ctx) {
     intercept_ctx_t *i_ctx = intercept_ctx_new(tnlr_ctx, zi_ctx->service_name, zi_ctx);
     intercept_ctx_set_match_addr(i_ctx, intercept_match_addr);
 
-    const ziti_address *za;
+    const ziti_address *intercept_addr;
+    int i;
+    const interp* temp_addr;
     switch (zi_ctx->cfg_desc->cfgtype) {
         case CLIENT_CFG_V1:
             intercept_ctx_add_protocol(i_ctx, "udp");
             intercept_ctx_add_protocol(i_ctx, "tcp");
-            za = intercept_addr_from_cfg_addr(&zi_ctx->cfg.client_v1.hostname, zi_ctx);
-            intercept_ctx_add_address(i_ctx, za);
+            interp* ipv4_addr = intercept_addr_from_cfg_addr(&zi_ctx->cfg.client_v1.hostname, zi_ctx);
+            if (ipv4_addr && ipv4_addr->ip4) {
+                intercept_ctx_add46c_address(i_ctx, ipv4_addr->ip4);
+            }
+    
+            interp* ipv6_addr = intercept_addr_from_cfg_addr(&zi_ctx->cfg.client_v1.hostname, zi_ctx);
+            if (ipv6_addr && ipv6_addr->ip6) {
+                intercept_ctx_add46c_address(i_ctx, ipv6_addr->ip6);
+            }
             intercept_ctx_add_port_range(i_ctx, zi_ctx->cfg.client_v1.port, zi_ctx->cfg.client_v1.port);
             break;
         case INTERCEPT_CFG_V1:
@@ -486,12 +571,12 @@ intercept_ctx_t *new_intercept_ctx(tunneler_context tnlr_ctx, ziti_intercept_t *
             }
             ziti_address *addr;
             MODEL_LIST_FOREACH(addr, config->addresses) {
-                za = intercept_addr_from_cfg_addr(addr, zi_ctx);
-                intercept_ctx_add_address(i_ctx, za);
+                intercept_addr = intercept_addr_from_cfg_addr(addr, zi_ctx);
+                intercept_ctx_add46c_address(i_ctx, intercept_addr);
             }
             MODEL_LIST_FOREACH(addr, config->allowed_source_addresses) {
-                za = intercept_addr_from_cfg_addr(addr, zi_ctx);
-                intercept_ctx_add_allowed_source_address(i_ctx, za);
+                intercept_addr = intercept_addr_from_cfg_addr(addr, zi_ctx);
+                intercept_ctx_add_allowed_source_address(i_ctx, intercept_addr);
             }
             ziti_port_range *pr;
             MODEL_LIST_FOREACH(pr, config->port_ranges) {
@@ -500,7 +585,7 @@ intercept_ctx_t *new_intercept_ctx(tunneler_context tnlr_ctx, ziti_intercept_t *
         }
             break;
         default:
-            break;
+            break; 
     }
 
     return i_ctx;

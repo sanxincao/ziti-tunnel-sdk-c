@@ -50,7 +50,7 @@ static model_map instances;
 
 static void on_ziti_event(ziti_context ztx, const ziti_event_t *event);
 
-static const char * cfg_types[] = { "ziti-tunneler-client.v1", "intercept.v1", "ziti-tunneler-server.v1", "host.v1", NULL };
+static const char * cfg_types[] = { "idn-tunneler-client.v1", "intercept.v1", "idn-tunneler-server.v1", "host.v1", NULL };
 
 static unsigned long refresh_interval = 10;
 
@@ -354,7 +354,7 @@ static int process_cmd(const tunnel_command *cmd, command_cb cb, void *ctx) {
                     char* dump_path = realpath(dump.dump_path, NULL);
 
                     if (dump_path != NULL) {
-                        snprintf(dump_file, sizeof(dump_file), "%s/%s.ziti", dump_path, identity->name);
+                        snprintf(dump_file, sizeof(dump_file), "%s/%s.idn", dump_path, identity->name);
                         dump_to_file((dumper) ziti_dump, inst->ztx, dump_file);
                     } else {
                         ZITI_LOG(WARN, "Could not generate the ziti dump file, because the path is not found");

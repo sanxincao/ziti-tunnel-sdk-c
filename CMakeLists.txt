@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.21)
 
 
-set(ZITI_SDK_DIR "" CACHE FILEPATH "developer option: use local ziti-sdk-c checkout")
+set(ZITI_SDK_DIR "./deps/ziti-sdk-c" CACHE FILEPATH "developer option: use local ziti-sdk-c checkout")
 set(ZITI_SDK_VERSION "1.6.6" CACHE STRING "ziti-sdk-c version or branch to use")
 
 # if TUNNEL_SDK_ONLY then don't descend into programs/ziti-edge-tunnel
@@ -66,7 +66,7 @@ else()
     endif()
 endif()
 
-option(DISABLE_SEMVER_VERIFICATION "Toggle SEMVER verification for BUILD_DIST_PACKAGES" OFF)
+option(DISABLE_SEMVER_VERIFICATION "Toggle SEMVER verification for BUILD_DIST_PACKAGES" ON)
 option(BUILD_DIST_PACKAGES "Build packages for distribution package managers" OFF)
 
 # verify the semver unless DISABLE option is set

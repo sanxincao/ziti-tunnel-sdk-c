@@ -90,6 +90,24 @@ static const char *proto_s[] = {
 ip_v4_src1(p),ip_v4_src2(p),ip_v4_src3(p),ip_v4_src4(p),ip_v4_src_port(p), \
 ip_v4_dst1(p),ip_v4_dst2(p),ip_v4_dst3(p),ip_v4_dst4(p),ip_v4_dst_port(p)
 
+#define ip_v6_src1(p) ((ntohs(_pkt(p)[14]) << 8) | ntohs(_pkt(p)[15]))
+#define ip_v6_src2(p) ((ntohs(_pkt(p)[16]) << 8) | ntohs(_pkt(p)[17]))
+#define ip_v6_src3(p) ((ntohs(_pkt(p)[18]) << 8) | ntohs(_pkt(p)[19]))
+#define ip_v6_src4(p) ((ntohs(_pkt(p)[20]) << 8) | ntohs(_pkt(p)[21]))
+#define ip_v6_src5(p) ((ntohs(_pkt(p)[22]) << 8) | ntohs(_pkt(p)[23]))
+#define ip_v6_src6(p) ((ntohs(_pkt(p)[24]) << 8) | ntohs(_pkt(p)[25]))
+#define ip_v6_src7(p) ((ntohs(_pkt(p)[26]) << 8) | ntohs(_pkt(p)[27]))
+#define ip_v6_src8(p) ((ntohs(_pkt(p)[28]) << 8) | ntohs(_pkt(p)[29]))
+
+#define ip_v6_dst1(p) ((ntohs(_pkt(p)[30]) << 8) | ntohs(_pkt(p)[31]))
+#define ip_v6_dst2(p) ((ntohs(_pkt(p)[32]) << 8) | ntohs(_pkt(p)[33]))
+#define ip_v6_dst3(p) ((ntohs(_pkt(p)[34]) << 8) | ntohs(_pkt(p)[35]))
+#define ip_v6_dst4(p) ((ntohs(_pkt(p)[36]) << 8) | ntohs(_pkt(p)[37]))
+#define ip_v6_dst5(p) ((ntohs(_pkt(p)[38]) << 8) | ntohs(_pkt(p)[39]))
+#define ip_v6_dst6(p) ((ntohs(_pkt(p)[40]) << 8) | ntohs(_pkt(p)[41]))
+#define ip_v6_dst7(p) ((ntohs(_pkt(p)[42]) << 8) | ntohs(_pkt(p)[43]))
+#define ip_v6_dst8(p) ((ntohs(_pkt(p)[44]) << 8) | ntohs(_pkt(p)[45]))
+
 extern int tunnel_log_level;
 typedef void (*tunnel_logger_f)(int level, const char *module, const char *file, unsigned int line, const char *func,
                                 const char *fmt, ...);

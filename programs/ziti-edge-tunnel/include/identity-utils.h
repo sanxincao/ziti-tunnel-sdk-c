@@ -28,6 +28,14 @@
 #define MAXTUNPREFIXLENGTH 24
 #endif
 
+#ifndef MINTUN6PREFIXLENGTH
+#define MINTUN6PREFIXLENGTH 64
+#endif
+
+#ifndef MAXTUN6PREFIXLENGTH
+#define MAXTUN6PREFIXLENGTH 121
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -58,6 +66,8 @@ void delete_identity_from_instance(const char* identifier);
 
 void set_ip_info(uint32_t dns_ip, uint32_t tun_ip, int bits);
 
+void set_ip6_info(struct ip_addr* dns_ip, struct ip_addr* tun_ip, int bits);
+
 void set_log_level(const char* log_level);
 
 void set_service_version();
@@ -69,6 +79,8 @@ int get_log_level(const char* log_level);
 void set_ziti_status(bool enabled, const char* identifier);
 
 void set_tun_ipv4_into_instance(const char* tun_ip, int prefixLength, bool addDns);
+
+void set_tun_ipv6_into_instance(const char* tun_ip, int prefixLength, bool addDns);
 
 char* get_ip_range_from_config();
 

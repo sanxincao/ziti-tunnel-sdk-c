@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdarg.h>
+#include <arpa/inet.h>
 
 #include <ziti/ziti_log.h>
 #include <ziti/ziti_dns.h>
@@ -62,7 +63,7 @@ static uv_once_t dns_updater_init;
 static struct {
     char tun_name[IFNAMSIZ];
     uint32_t dns_ip;
-
+    struct ip6_addr dns_ip6;
     uv_udp_t nl_udp;
     uv_timer_t update_timer;
 } dns_maintainer;
@@ -130,7 +131,7 @@ static void process_routes_updates(uv_work_t *wr) {
     struct rt_process_cmd *cmd = wr->data;
 
     uv_fs_t tmp_req = {0};
-    uv_file routes_file = uv_fs_mkstemp(wr->loop, &tmp_req, "/tmp/ziti-tunnel-routes.XXXXXX", NULL);
+    uv_file routes_file = uv_fs_mkstemp(wr->loop, &tmp_req, "/tmp/idn-tunnel-routes.XXXXXX", NULL);
     if (routes_file < 0) {
         ZITI_LOG(ERROR, "failed to create temp file for route updates %d/%s", routes_file, uv_strerror(routes_file));
         uv_fs_req_cleanup(&tmp_req);
@@ -285,13 +286,43 @@ static void find_dns_updater() {
 
 static void set_dns(uv_work_t *wr) {
     uv_once(&dns_updater_init, find_dns_updater);
-    dns_updater(
+    char ipv6_str[INET6_ADDRSTRLEN];
+    ip6addr_ntoa_r(&dns_maintainer.dns_ip6, ipv6_str, sizeof(ipv6_str));
+    struct in6_addr addr6;
+    NetworkStatus status;
+    detect_network_win(&status);
+    if (status.has_ipv4 && status.has_ipv6) {
+        // 双栈环境：同时设置 IPv4 和 IPv6 DNS
+        dns_updater(
             dns_maintainer.tun_name,
             if_nametoindex(dns_maintainer.tun_name),
-            inet_ntoa(*(struct in_addr*)&dns_maintainer.dns_ip)
-    );
+            inet_ntoa(*(struct in_addr*)&dns_maintainer.dns_ip) 
+        );
+        // 再设IPv6
+        dns_updater(
+            dns_maintainer.tun_name,
+            if_nametoindex(dns_maintainer.tun_name),
+            ip6addr_ntoa(&dns_maintainer.dns_ip6)
+        );
+    }
+    else if (status.has_ipv6){
+        // 验证 IPv6 地址格式
+        //printf("验证 IPv6 地址格式\n");
+        dns_updater(
+            dns_maintainer.tun_name,
+            if_nametoindex(dns_maintainer.tun_name),
+            ip6addr_ntoa(&dns_maintainer.dns_ip6) // 使用经过验证的 IPv6 地址更新
+        );
+        
+    } else {
+        //printf("验证 IPv4 地址格式\n");
+        dns_updater(
+            dns_maintainer.tun_name,
+            if_nametoindex(dns_maintainer.tun_name),
+            inet_ntoa(*(struct in_addr*)&dns_maintainer.dns_ip)  // 使用 IPv4 地址更新
+        );
+    } 
 }
-
 static void after_set_dns(uv_work_t *wr, int status) {
     ZITI_LOG(DEBUG, "DNS update: %d", status);
     free(wr);
@@ -318,38 +349,67 @@ void on_nl_message(uv_udp_t *nl, ssize_t len, const uv_buf_t *buf, const struct 
     if (buf->base) free(buf->base);
 }
 
-static void init_dns_maintainer(uv_loop_t *loop, const char *tun_name, uint32_t dns_ip) {
-    strncpy(dns_maintainer.tun_name, tun_name, sizeof(dns_maintainer.tun_name));
-    dns_maintainer.dns_ip = dns_ip;
+static void init_dns_maintainer(
+    uv_loop_t *loop,
+    const char *tun_name,
+    const struct ip6_addr *dns_ip6_ptr,  // 改为指针类型
+    const uint32_t *dns_ip4_ptr         // 改为指针类型
+) {
+    // ZITI_LOG(INFO, "初始化 DNS");
 
-    ZITI_LOG(DEBUG, "setting up NETLINK listener");
+    // 复制设备名到全局维护结构体
+    strncpy(dns_maintainer.tun_name, tun_name, sizeof(dns_maintainer.tun_name));
+
+    // 根据协议类型设置 DNS 地址（处理空指针）
+    if (dns_ip6_ptr != NULL) {
+        dns_maintainer.dns_ip6 = *dns_ip6_ptr;  // 解引用指针
+        ZITI_LOG(DEBUG, "设置 IPv6 DNS: %s", ip6addr_ntoa(dns_ip6_ptr));
+    } else {
+        memset(&dns_maintainer.dns_ip6, 0, sizeof(dns_maintainer.dns_ip6));
+    }
+
+    if (dns_ip4_ptr != NULL) {
+        dns_maintainer.dns_ip = *dns_ip4_ptr;  // 解引用指针
+        struct in_addr addr = { .s_addr = dns_maintainer.dns_ip };
+        ZITI_LOG(DEBUG, "设置 IPv4 DNS: %s", inet_ntoa(addr));
+    } else {
+        dns_maintainer.dns_ip = 0;
+    }
+
+    // 后续 NETLINK 初始化逻辑不变
+    ZITI_LOG(DEBUG, "设置 NETLINK 监听器");
     struct sockaddr_nl local = {0};
     local.nl_family = AF_NETLINK;
-    local.nl_groups = RTMGRP_LINK;// | RTMGRP_IPV4_ROUTE;
+    local.nl_groups = RTMGRP_LINK;
 
-    int s = socket(AF_NETLINK, SOCK_DGRAM|SOCK_CLOEXEC, NETLINK_ROUTE);
-    if ( s < 0) {
-        ZITI_LOG(ERROR, "failed to open netlink socket: %d/%s", errno, strerror(errno));
+    int s = socket(AF_NETLINK, SOCK_DGRAM | SOCK_CLOEXEC, NETLINK_ROUTE);
+    if (s < 0) {
+        ZITI_LOG(ERROR, "打开 NETLINK socket 失败: %d/%s", errno, strerror(errno));
+        return;
     }
     if (bind(s, (struct sockaddr *)&local, sizeof(local)) < 0) {
-        ZITI_LOG(ERROR, "failed to bind %d/%s", errno, strerror(errno));
+        ZITI_LOG(ERROR, "绑定失败: %d/%s", errno, strerror(errno));
+        close(s);
+        return;
     }
 
     CHECK_UV(uv_udp_init(loop, &dns_maintainer.nl_udp));
-    uv_unref((uv_handle_t *) &dns_maintainer.nl_udp);
+    uv_unref((uv_handle_t *)&dns_maintainer.nl_udp);
     CHECK_UV(uv_udp_open(&dns_maintainer.nl_udp, s));
-
-    struct sockaddr_nl kern = {0};
-    kern.nl_family = AF_NETLINK;
-    kern.nl_groups = 0;
 
     CHECK_UV(uv_udp_recv_start(&dns_maintainer.nl_udp, nl_alloc, on_nl_message));
 
     uv_timer_init(loop, &dns_maintainer.update_timer);
-    uv_unref((uv_handle_t *) &dns_maintainer.update_timer);
+    uv_unref((uv_handle_t *)&dns_maintainer.update_timer);
     do_dns_update(loop, 0);
 }
 
+// 定义一个静态函数，用于排除指定网络设备上的路由
+// 参数：
+//   dev - 网络接口句柄
+//   l   - libuv事件循环指针（代码中未使用）
+//   addr- 需要处理的IP地址
+// 返回值：执行结果状态（整数）
 static int tun_exclude_rt(netif_handle dev, uv_loop_t *l, const char *addr) {
     char cmd[1024];
     char route[128];
@@ -407,7 +467,17 @@ static const char *get_tun_name(netif_handle tun) {
     return tun->name;
 }
 
-netif_driver tun_open(uv_loop_t *loop, uint32_t tun_ip, uint32_t dns_ip, const char *dns_block, char *error, size_t error_len) {
+netif_driver tun_open(
+    uv_loop_t *loop,
+    const uint32_t *tun_ip4,       // 改为指针类型，允许 NULL
+    const uint32_t *dns_ip4,       // 改为指针类型，允许 NULL
+    const char *dns_block4,
+    const struct ip6_addr *tun_ip, // 改为指针类型，允许 NULL
+    const struct ip6_addr *dns_ip, // 改为指针类型，允许 NULL
+    const char *dns_block,
+    char *error,
+    size_t error_len
+){
     if (error != NULL) {
         memset(error, 0, error_len * sizeof(char));
     }
@@ -428,7 +498,7 @@ netif_driver tun_open(uv_loop_t *loop, uint32_t tun_ip, uint32_t dns_ip, const c
         return NULL;
     }
 
-    struct ifreq ifr = { .ifr_name = "ziti%d",
+    struct ifreq ifr = { .ifr_name = "idn%d",
                          .ifr_flags = IFF_TUN | IFF_NO_PI };
 
     if (ioctl(tun->fd, TUNSETIFF, &ifr) < 0) {
@@ -461,39 +531,32 @@ netif_driver tun_open(uv_loop_t *loop, uint32_t tun_ip, uint32_t dns_ip, const c
     driver->commit_routes = tun_commit_routes;
     driver->get_name = get_tun_name;
 
-    __attribute__((cleanup(cleanup_sock))) int netdev = socket(AF_INET, SOCK_DGRAM, IPPROTO_IP);
-    if (netdev == -1) {
-        snprintf(error, error_len, "failed to create netdevice socket: %s", strerror(errno));
-        tun_close(tun);
-        return NULL;
+    // 启动 TUN 设备
+    run_command("ip link set %s up", tun->name);  // 将接口设置为启用状态
+    if (tun_ip4 != NULL && tun_ip != NULL) {
+        // 双栈配置
+        run_command("ip addr add %s dev %s", inet_ntoa(*(struct in_addr*)tun_ip4), tun->name);
+        run_command("ip -6 addr add %s dev %s", ip6addr_ntoa(tun_ip), tun->name);
+        init_dns_maintainer(loop, tun->name, dns_ip, dns_ip4);
+    }
+    else if (tun_ip4 != NULL) {
+        // IPv4 单栈
+        run_command("ip addr add %s dev %s", inet_ntoa(*(struct in_addr*)tun_ip4), tun->name);
+
+        init_dns_maintainer(loop, tun->name, NULL, dns_ip4);  // 传递空指针
+    }
+    else {
+        // IPv6 单栈
+        run_command("ip -6 addr add %s dev %s", ip6addr_ntoa(tun_ip), tun->name);
+        init_dns_maintainer(loop, tun->name, dns_ip, NULL);
     }
 
-    struct sockaddr_in *ifr_addrp = (struct sockaddr_in* ) &ifr.ifr_addr;
-    memset(ifr_addrp, 0, sizeof(struct sockaddr));
-    ifr_addrp->sin_family = AF_INET;
-    ifr_addrp->sin_addr.s_addr = tun_ip;
 
-    if (ioctl(netdev, SIOCSIFADDR, &ifr) == -1) {
-        snprintf(error, error_len, "failed to set tun address: %s", strerror(errno));
-        tun_close(tun);
-        return NULL;
+    // 如果定义了 DNS 阻止路由，则添加相应的路由
+    if (dns_block4 && dns_block) {
+        run_command("ip route add %s dev %s", dns_block4, tun->name);  // 添加 IPv4 阻止路由
+        run_command("ip -6 route add %s dev %s", dns_block, tun->name);  // 添加 IPv6 阻止路由
     }
 
-    ifr.ifr_flags = IFF_UP | IFF_RUNNING | IFF_NOARP | IFF_MULTICAST;
-
-    if (ioctl(netdev, SIOCSIFFLAGS, &ifr) == -1) {
-        snprintf(error, error_len, "failed to set tun up/running: %s", strerror(errno));
-        tun_close(tun);
-        return NULL;
-    }
-
-    if (dns_ip) {
-        init_dns_maintainer(loop, tun->name, dns_ip);
-    }
-
-    if (dns_block) {
-        run_command("ip route add %s dev %s", dns_block, tun->name);
-    }
-
-    return driver;
+    return driver;  // 返回已初始化的驱动程序结构
 }

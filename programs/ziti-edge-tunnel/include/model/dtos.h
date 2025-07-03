@@ -100,17 +100,27 @@ XX(Duration, model_number, none, Duration, __VA_ARGS__) \
 XX(StartTime, timestamp, none, StartTime, __VA_ARGS__) \
 XX(Identities, tunnel_identity, array, Identities, __VA_ARGS__) \
 XX(IpInfo, ip_info, ptr, IpInfo, __VA_ARGS__) \
+XX(Ip6Info, ip6_info, ptr, Ip6Info, __VA_ARGS__) \
 XX(LogLevel, model_string, none, LogLevel, __VA_ARGS__) \
 XX(ServiceVersion, service_version, ptr, ServiceVersion, __VA_ARGS__) \
 XX(TunIpv4, model_string, none, TunIpv4, __VA_ARGS__) \
+XX(TunIpv6, model_string, none, TunIpv6, __VA_ARGS__) \
 XX(TunPrefixLength, model_number, none, TunIpv4Mask, __VA_ARGS__) \
+XX(Tun6PrefixLength, model_number, none, TunIpv6Mask, __VA_ARGS__) \
 XX(AddDns, model_bool, none, AddDns, __VA_ARGS__) \
+XX(AddDns6, model_bool, none, AddDns6, __VA_ARGS__) \
 XX(ApiPageSize, model_number, none, ApiPageSize, __VA_ARGS__) \
 XX(TunName, model_string, none, TunName, __VA_ARGS__)\
 XX(ConfigDir, model_string, none, ConfigDir, __VA_ARGS__)
 
 #define IP_INFO(XX, ...) \
 XX(Ip, model_string, none, Ip, __VA_ARGS__) \
+XX(Subnet, model_string, none, Subnet, __VA_ARGS__) \
+XX(MTU, model_number, none, MTU, __VA_ARGS__) \
+XX(DNS, model_string, none, DNS, __VA_ARGS__)
+
+#define IP6_INFO(XX, ...) \
+XX(Ip6, model_string, none, Ip6, __VA_ARGS__) \
 XX(Subnet, model_string, none, Subnet, __VA_ARGS__) \
 XX(MTU, model_number, none, MTU, __VA_ARGS__) \
 XX(DNS, model_string, none, DNS, __VA_ARGS__)
@@ -129,6 +139,7 @@ DECLARE_MODEL(tunnel_service_permissions, TUNNEL_SERVICE_PERMISSIONS)
 DECLARE_MODEL(tunnel_service, TUNNEL_SERVICE)
 DECLARE_MODEL(tunnel_identity, TUNNEL_IDENTITY)
 DECLARE_MODEL(ip_info, IP_INFO)
+DECLARE_MODEL(ip6_info, IP6_INFO)
 DECLARE_MODEL(service_version, SERVICE_VERSION)
 DECLARE_MODEL(tunnel_status, TUNNEL_STATUS)
 

@@ -411,21 +411,27 @@ bool try_libsystemd_resolver(const char *tun_name) {
 void dns_update_systemd_resolved(const char *tun, unsigned int ifindex, const char *addr) {
     int r;
     struct in_addr inaddr;
-
+    struct in6_addr inaddr6;
+    unsigned char ay[16];  // Array large enough for IPv6
+    int family;           // Address family
+    size_t addr_len;      // Length of address
     _cleanup_(sd_bus_flush_close_unrefp_f) sd_bus *bus = NULL;
 
-    // dbus 'ay' encodes 'array of bytes'
-    unsigned char ay[4];
-
-    r = inet_pton(AF_INET, addr, &inaddr);
-
-    if (r != 1) {
+    // Determine if the address is IPv4 or IPv6
+    if (inet_pton(AF_INET, addr, &inaddr) == 1) {
+        family = AF_INET;
+        addr_len = 4;
+        memcpy(ay, &inaddr, addr_len);
+    }
+    else if (inet_pton(AF_INET6, addr, &inaddr6) == 1) {
+        family = AF_INET6;
+        addr_len = 16;
+        memcpy(ay, &inaddr6, addr_len);
+    }
+    else {
         ZITI_LOG(ERROR, "Failed to translate DNS address. Received: %s", addr);
         return;
-    } else {
-        sscanf(addr, "%hhu.%hhu.%hhu.%hhu", &ay[0], &ay[1], &ay[2], &ay[3]);
     }
-
     r = sd_bus_open_system_f(&bus);
     if (r < 0) {
         ZITI_LOG(ERROR, "Could not connect to system DBus: %s", strerror(-r));
@@ -436,7 +442,8 @@ void dns_update_systemd_resolved(const char *tun, unsigned int ifindex, const ch
     RET_ON_FAIL(set_systemd_resolved_link_setting(bus, tun, "SetLinkMulticastDNS", "is", ifindex, "no"));
     RET_ON_FAIL(set_systemd_resolved_link_setting(bus, tun, "SetLinkDNSOverTLS", "is", ifindex, "no"));
     RET_ON_FAIL(set_systemd_resolved_link_setting(bus, tun, "SetLinkDNSSEC", "is", ifindex, "no"));
-    RET_ON_FAIL(set_systemd_resolved_link_setting(bus, tun, "SetLinkDNS", "ia(iay)", ifindex, 1, AF_INET, 4, ay[0], ay[1], ay[2], ay[3]));
+    //RET_ON_FAIL(set_systemd_resolved_link_setting(bus, tun, "SetLinkDNS", "ia(iay)", ifindex, 1, AF_INET, 4, ay[0], ay[1], ay[2], ay[3]));
+    RET_ON_FAIL(set_systemd_resolved_link_setting(bus, tun, "SetLinkDNS", "ia(iay)", ifindex, 1, family, addr_len, ay[0], ay[1], ay[2], ay[3], ay[4], ay[5], ay[6], ay[7], ay[8], ay[9], ay[10], ay[11], ay[12], ay[13], ay[14], ay[15]));
 
     r = detect_systemd_resolved_routing_domain_wildcard(bus, ifindex);
 

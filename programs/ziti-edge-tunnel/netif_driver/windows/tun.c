@@ -36,10 +36,10 @@
 #include <stdlib.h>
 #include <combaseapi.h>
 #include <ziti/model_support.h>
-
+#include "lwip/ip6_addr.h"
 #include "tun.h"
 
-#define ZITI_TUN_NAME_BASE "ziti-tun"
+#define ZITI_TUN_NAME_BASE "idn-tun"
 
 #define ROUTE_LIFETIME (10 * 60) /* in seconds */
 #define ROUTE_REFRESH ((ROUTE_LIFETIME - (ROUTE_LIFETIME/10))*1000)
@@ -66,10 +66,13 @@ static int tun_setup_read(netif_handle tun, uv_loop_t *loop, packet_cb on_packet
 static ssize_t tun_write(netif_handle tun, const void *buf, size_t len);
 static int tun_add_route(netif_handle tun, const char *dest);
 static int tun_del_route(netif_handle tun, const char *dest);
+int set_dns(netif_handle tun, uint32_t dns_ip);
+int set_ip6_dns(netif_handle tun, struct ip6_addr dns_ip6);
 static int tun_exclude_rt(netif_handle dev, uv_loop_t *loop, const char *dest);
 
 static void WINAPI if_change_cb(PVOID CallerContext, PMIB_IPINTERFACE_ROW Row, MIB_NOTIFICATION_TYPE NotificationType);
 static void refresh_routes(uv_timer_t *timer);
+static void cleanup_adapters(wchar_t *tun_name);
 static HANDLE if_change_handle;
 
 static WINTUN_CREATE_ADAPTER_FUNC *WintunCreateAdapter;
@@ -181,7 +184,8 @@ static const char *get_tun_name(netif_handle tun) {
     return tun->name;
 }
 
-netif_driver tun_open(struct uv_loop_s *loop, uint32_t tun_ip, const char *cidr, char *error, size_t error_len) {
+netif_driver tun_open(struct uv_loop_s* loop, uint32_t tun_ip, const char* cidr4,
+    struct ip6_addr* tun_ip6, const char* cidr6, char* error, size_t error_len) {
     if (error != NULL) {
         memset(error, 0, error_len * sizeof(char));
     }
@@ -225,7 +229,7 @@ netif_driver tun_open(struct uv_loop_s *loop, uint32_t tun_ip, const char *cidr,
     }
     WintunSetLogger(WintunLogger); //set the logger here exclusively to avoid these errors from WinTun: Failed to find matching adapter name: Element not found. (Code 0x00000490)
 
-    tun->adapter = WintunCreateAdapter(w_adapter_name, L"OpenZiti", NULL); // Wintun adds "Tunnel" so this will be "OpenZiti Tunnel"
+    tun->adapter = WintunCreateAdapter(w_adapter_name, L"Idn", NULL); // Wintun adds "Tunnel" so this will be "OpenZiti Tunnel"
     if (!tun->adapter) {
         DWORD err = GetLastError();
         snprintf(error, error_len, "Failed to create adapter: %ld", err);
@@ -259,28 +263,70 @@ netif_driver tun_open(struct uv_loop_s *loop, uint32_t tun_ip, const char *cidr,
         }
         return NULL;
     }
+	
+	
+	
+	if (tun_ip) {
+	        MIB_UNICASTIPADDRESS_ROW AddressRow;
+	        InitializeUnicastIpAddressEntry(&AddressRow);
+	        AddressRow.InterfaceLuid = tun->luid;
+	        AddressRow.Address.Ipv4.sin_family = AF_INET;
+	        AddressRow.Address.Ipv4.sin_addr.S_un.S_addr = tun_ip;
+	        char ipv4_str[40];
+	        inet_ntop(AF_INET, &tun_ip, ipv4_str, INET_ADDRSTRLEN);
+	        //ZITI_LOG(INFO, "tun_open里的IPv4 address: %s", ipv4_str);
 
-    MIB_UNICASTIPADDRESS_ROW AddressRow;
-    InitializeUnicastIpAddressEntry(&AddressRow);
-    AddressRow.InterfaceLuid = tun->luid;
-    AddressRow.Address.Ipv4.sin_family = AF_INET;
-    AddressRow.Address.Ipv4.sin_addr.S_un.S_addr = tun_ip;
+	        if (cidr4) {
+	            int bits;
+	            uint32_t ip[4];
+	            sscanf(cidr4, "%d.%d.%d.%d/%d", &ip[0], &ip[1], &ip[2], &ip[3], &bits);
+	            AddressRow.OnLinkPrefixLength = bits;
+	        }
+	        else {
+	            AddressRow.OnLinkPrefixLength = 16;
+	        }
+	        DWORD err = CreateUnicastIpAddressEntry(&AddressRow);
+	        if (err != ERROR_SUCCESS && err != ERROR_OBJECT_ALREADY_EXISTS)
+	        {
+	            snprintf(error, error_len, "Failed to set IP address: %d", err);
+	            tun_close(tun);
+	            return NULL;
+	        }
+	    }
+ 
+	    if (tun_ip6) {
+	        MIB_UNICASTIPADDRESS_ROW AddressRow6;
+	        InitializeUnicastIpAddressEntry(&AddressRow6);
+	        AddressRow6.InterfaceLuid = tun->luid;
+	        AddressRow6.Address.Ipv6.sin6_family = AF_INET6;
+ 
+	        // 修复对 addr 字段的访问
+            memcpy(&AddressRow6.Address.Ipv6.sin6_addr, tun_ip6->addr, sizeof(struct in6_addr));
+	        char ipv6_str[INET6_ADDRSTRLEN];
+	        inet_ntop(AF_INET6, &AddressRow6.Address.Ipv6.sin6_addr, ipv6_str, INET6_ADDRSTRLEN);
+	        ZITI_LOG(INFO, "tun_open里的IPv6 address: %s", ipv6_str);
+ 
+	        if (cidr6) {
+	            char address_str[INET6_ADDRSTRLEN];
+	            int prefix_length;
+	            if (sscanf(cidr6, "%[^/]/%d", address_str, &prefix_length) == 2) {
+	                AddressRow6.OnLinkPrefixLength = prefix_length;
+	            }
+	            else {
+	                snprintf(error, error_len, "Invalid IPv6 CIDR format");
+	                tun_close(tun);
+	                return NULL;
+	            }
+	        }
+ 
+	        DWORD err = CreateUnicastIpAddressEntry(&AddressRow6);  // 确保提交 IPv6 地址
+	        if (err != ERROR_SUCCESS && err != ERROR_OBJECT_ALREADY_EXISTS) {
+	            snprintf(error, error_len, "Failed to set IPv6 address: %d", err);
+	            tun_close(tun);
+	            return NULL;
+	        }
+	    }
 
-    if (cidr) {
-        int bits;
-        uint32_t ip[4];
-        sscanf(cidr, "%d.%d.%d.%d/%d", &ip[0], &ip[1], &ip[2], &ip[3], &bits);
-        AddressRow.OnLinkPrefixLength = bits;
-    } else {
-        AddressRow.OnLinkPrefixLength = 16;
-    }
-    DWORD err = CreateUnicastIpAddressEntry(&AddressRow);
-    if (err != ERROR_SUCCESS && err != ERROR_OBJECT_ALREADY_EXISTS)
-    {
-        snprintf(error, error_len, "Failed to set IP address: %d", err);
-        tun_close(tun);
-        return NULL;
-    }
 
     driver->handle       = tun;
     driver->setup        = tun_setup_read;
@@ -295,9 +341,13 @@ netif_driver tun_open(struct uv_loop_s *loop, uint32_t tun_ip, const char *cidr,
     uv_unref((uv_handle_t *) &tun->route_timer);
     uv_timer_start(&tun->route_timer, refresh_routes, ROUTE_REFRESH, ROUTE_REFRESH);
 
-    if (cidr) {
-        tun_add_route(tun, cidr);
+    if (cidr4) {
+        tun_add_route(tun, cidr4);
     }
+    if (cidr6) {
+        tun_add_route(tun, cidr6);
+    }
+
 
     return driver;
 }
@@ -389,21 +439,128 @@ ssize_t tun_write(netif_handle tun, const void *buf, size_t len) {
     return 0;
 }
 
-static int parse_route(PIP_ADDRESS_PREFIX pfx, const char *route) {
-    int ip[4];
-    int bits;
-    int rc = sscanf_s(route, "%d.%d.%d.%d/%d", &ip[0], &ip[1], &ip[2], &ip[3], &bits);
-    if (rc < 4) {
-        ZITI_LOG(WARN, "invalid IPV4 route spec[%s]", route);
-        return -1;
-    } else {
-        pfx->PrefixLength = rc == 4 ? 32 : bits;
-
-        pfx->Prefix.Ipv4.sin_family = AF_INET;
-        pfx->Prefix.Ipv4.sin_addr.S_un.S_addr = (ip[0]) | (ip[1] << 8) | (ip[2] << 16) | (ip[3] << 24);
-    }
-    return 0;
+static int parse_ipv6(const char *str, uint8_t *addr) {
+ uint16_t temp_addr[8] = {0};
+ int double_colon_index = -1;
+ int segment_count = 0;
+ const char *ptr = str;
+ 
+ // Initialize temporary address to all zeros
+ memset(addr, 0, 16);
+ 
+ //printf("Parsing IPv6 address: %s\n", str);//接收的字符串写出来，[2408:
+ 
+ // Iterate through the input string
+ while (*ptr) {
+     if (segment_count > 7) {
+         printf("Error: Too many segments\n");
+         return -1; // Too many segments
+     }
+ 
+     if (*ptr == ':') {
+         if (ptr == str || *(ptr - 1) == ':') {
+             if (double_colon_index != -1) {
+                // printf("Error: More than one '::' found\n");
+                 return -1; // More than one '::' found
+             }
+             double_colon_index = segment_count;//遇到::左移一位
+             //printf("Found '::' at segment %d\n", segment_count);
+             ptr++;
+             if (*ptr == ':') {
+                 ptr++; // skip the second colon in '::'
+             }
+             continue;
+         }
+         ptr++;
+         continue;
+     }
+ 
+     char segment_str[5] = {0}; // Maximum length of a segment is 4 digits
+     int segment_len = 0;
+ 
+     while (*ptr && *ptr != ':' && segment_len < 4) {
+         if (!isxdigit(*ptr)) {
+             printf("Error: Invalid character '%c' in segment\n", *ptr);
+             return -1; // Invalid character
+         }
+         segment_str[segment_len++] = *ptr++;
+     }
+ 
+     if (segment_len == 0) {
+         printf("Error: Empty segment\n");
+         return -1; // Empty segment
+     }
+ 
+     temp_addr[segment_count] = (uint16_t)strtol(segment_str, NULL, 16);
+     //printf("Parsed segment %d: %x\n", segment_count, temp_addr[segment_count]);
+     segment_count++;
+ }
+ 
+ if (segment_count == 0) {
+     printf("Error: No segments found\n");
+     return -1; // No segments found
+ }
+ 
+ if (double_colon_index != -1) {
+     int num_to_copy = segment_count - double_colon_index;
+     memmove(&temp_addr[8 - num_to_copy], &temp_addr[double_colon_index], num_to_copy * sizeof(uint16_t));
+     memset(&temp_addr[double_colon_index], 0, (8 - segment_count) * sizeof(uint16_t));
+     //printf("Adjusted segments for '::' shorthand\n");
+     segment_count = 8; // Correct segment count after handling '::'
+ }
+ 
+ for (int i = 0; i < 8; i++) {
+     addr[2 * i] = (uint8_t)(temp_addr[i] >> 8);
+     addr[2 * i + 1] = (uint8_t)(temp_addr[i] & 0xff);
+ }
+ 
+ //printf("Parsed IPv6 address: ");
+ //for (int i = 0; i < 16; i++) {
+ //    printf("%02x", addr[i]);
+ //    if (i % 2 && i != 15) {
+ //        printf(":");
+ //    }
+ //}
+ //printf("\n");
+ 
+ return 0;
 }
+static int parse_route(PIP_ADDRESS_PREFIX pfx, const char *route) {
+	int ip[4];
+	int bits;
+	if (strchr(route, ':')) { // IPv6
+	 char addr[40];
+	 int rc = sscanf_s(route, "%39[^/]/%d", addr, (unsigned)_countof(addr), &bits);
+	 // printf("route: %s\n", route);
+	 // printf("addr: %s\n", addr);
+	 // printf("bits: %d\n", bits);
+	 // printf("rc: %d\n", rc);
+	 if (rc < 1) {
+	     printf("invalid IPV6 route spec[%s]\n", route);
+	     return -1;
+	 } else {
+	     pfx->PrefixLength = rc == 1 ? 128 : bits;
+	     pfx->Prefix.Ipv6.sin6_family = AF_INET6;
+	     if (parse_ipv6(addr, pfx->Prefix.Ipv6.sin6_addr.s6_addr) != 0) {
+	         printf("invalid IPV6 address[%s]\n", addr);
+	         return -1;
+	     }
+	 }
+	} else { // IPv4
+	 int rc = sscanf_s(route, "%d.%d.%d.%d/%d", &ip[0], &ip[1], &ip[2], &ip[3], &bits);
+	 if (rc < 4) {
+	     printf("invalid IPV4 route spec[%s]\n", route);
+	     return -1;
+	 } else {
+	     pfx->PrefixLength = rc == 4 ? 32 : bits;
+	     pfx->Prefix.Ipv4.sin_family = AF_INET;
+	     pfx->Prefix.Ipv4.sin_addr.S_un.S_addr = (ip[0]) | (ip[1] << 8) | (ip[2] << 16) | (ip[3] << 24);
+	 }
+	 //printf("=========5====解析一个IPv4路由得到ip和掩码:%s ===========\n", route);
+	}
+	return 0;
+}
+
 
 typedef NTSTATUS(__stdcall *route_f)(const MIB_IPFORWARD_ROW2*);
 
@@ -525,25 +682,87 @@ void refresh_routes(uv_timer_t *timer) {
     }
 }
 
-int set_dns(netif_driver tun, uint32_t dns_ip) {
-    // TODO maybe call winapi SetInterfaceDnsSetting
-    char cmd[1024];
-    char ip[4];
-    memcpy(ip, &dns_ip, 4);
-    const char *tun_name = get_tun_name(tun->handle);
-    snprintf(cmd, sizeof(cmd),
-             "powershell -Command Set-DnsClientServerAddress "
-             "-InterfaceAlias %s "
-             "-ServerAddress %d.%d.%d.%d",
-             tun_name, ip[0], ip[1], ip[2], ip[3]);
-    ZITI_LOG(INFO, "executing '%s'", cmd);
+int is_windows_10_or_later() {
+	OSVERSIONINFOEXW osvi;
+	DWORDLONG condition_mask = 0;
+     
+	ZeroMemory(&osvi, sizeof(OSVERSIONINFOEXW));
+	osvi.dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXW); 
+	osvi.dwMajorVersion = 10; // Windows 10 的主版本号
+     
+	VER_SET_CONDITION(condition_mask, VER_MAJORVERSION, VER_GREATER_EQUAL);
+	return VerifyVersionInfoW(&osvi, VER_MAJORVERSION, condition_mask);
+}
+ 
+// 设置 IPv6 DNS
+int set_ip6_dns(netif_handle tun, struct in6_addr dns_ip6) {
+    // printf("开始设置ipv6 DNS\n");
+    char cmd[2048];
+    char dns_ipv6_str[INET6_ADDRSTRLEN];
+    const char *tun_name = get_tun_name(tun);
+ 
+    // 使用inet_ntop转换in6_addr到字符串
+    inet_ntop(AF_INET6, &dns_ip6, dns_ipv6_str, INET6_ADDRSTRLEN);
+    ZITI_LOG(INFO, "DNS地址设置为：%s", dns_ipv6_str);
+ 
+    if (is_windows_10_or_later()) {
+        snprintf(cmd, sizeof(cmd),
+                 "powershell -Command \"Set-DnsClientServerAddress -InterfaceAlias '%s' -ServerAddresses %s\"",
+                 tun_name, dns_ipv6_str);
+    } else {
+        snprintf(cmd, sizeof(cmd),
+                 "netsh interface ipv6 set dnsservers name=\"%s\" static %s validate=no",
+                 tun_name, dns_ipv6_str);
+    }
+ 
+    ZITI_LOG(INFO, "执行命令：'%s'", cmd);
     int rc = system(cmd);
     if (rc != 0) {
-        ZITI_LOG(WARN, "set DNS: %d(err=%ld)", rc, GetLastError());
+        ZITI_LOG(WARN, "设置 IPv6 DNS 失败，返回码: %d, 错误: %ld", rc, GetLastError());
+    } else {
+        ZITI_LOG(INFO, "成功设置 IPv6 DNS。");
     }
+ 
     return rc;
 }
 
+int set_dns(netif_handle tun, uint32_t dns_ip) {
+    char cmd[1024];
+    unsigned char ip[4];
+    const char *tun_name = get_tun_name(tun);
+    printf("tun_name: %s\n", tun_name);
+    int rc;
+    dns_ip = htonl(dns_ip); // 将 dns_ip 转为网络字节序
+    ip[0] = (dns_ip >> 24) & 0xFF;
+    ip[1] = (dns_ip >> 16) & 0xFF;
+    ip[2] = (dns_ip >> 8) & 0xFF;
+    ip[3] = dns_ip & 0xFF;
+
+    ZITI_LOG(INFO, "DNS地址设置为：%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    
+    if (is_windows_10_or_later()) {
+        // 使用 PowerShell
+        snprintf(cmd, sizeof(cmd),
+                "powershell -Command \"Set-DnsClientServerAddress -InterfaceAlias '%s' -ServerAddresses %u.%u.%u.%u\"",
+                tun_name, ip[0], ip[1], ip[2], ip[3]);
+    } else {
+        // 使用 netsh
+        snprintf(cmd, sizeof(cmd),
+                "netsh interface ip set dns name=\"%s\" source=static addr=%u.%u.%u.%u",
+                tun_name, ip[0], ip[1], ip[2], ip[3]);
+    }
+
+    ZITI_LOG(INFO, "执行命令：'%s'", cmd);
+    rc = system(cmd);
+    if (rc != 0) {
+        ZITI_LOG(WARN, "设置 IPv4 DNS 失败，返回码: %d, 错误: %ld", rc, GetLastError());
+    } else {
+        ZITI_LOG(INFO, "成功设置 IPv4 DNS。");
+    }
+
+    return rc;
+}
+ 
 static BOOL CALLBACK
 tun_delete_cb(_In_ WINTUN_ADAPTER_HANDLE to_delete, _In_ LPARAM param) {
     ZITI_LOG(INFO, "Deleting wintun adapter");

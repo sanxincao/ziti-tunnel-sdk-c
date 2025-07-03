@@ -65,6 +65,7 @@ XX(GetMFACodes, __VA_ARGS__) \
 XX(GetMetrics, __VA_ARGS__) \
 XX(SetLogLevel, __VA_ARGS__) \
 XX(UpdateTunIpv4, __VA_ARGS__) \
+XX(UpdateTunIpv6, __VA_ARGS__) \
 XX(ServiceControl, __VA_ARGS__) \
 XX(Status, __VA_ARGS__) \
 XX(RefreshIdentity, __VA_ARGS__) \
@@ -171,6 +172,11 @@ XX(tunIP, model_string, none, TunIPv4, __VA_ARGS__) \
 XX(prefixLength, model_number, none, TunPrefixLength, __VA_ARGS__) \
 XX(addDns, model_bool, none, AddDns, __VA_ARGS__)
 
+#define TUNNEL_TUN_IP_V6(XX, ...) \
+XX(tunIP6, model_string, none, TunIPv6, __VA_ARGS__) \
+XX(prefixLength6, model_number, none, TunPrefixLength, __VA_ARGS__) \
+XX(addDns6, model_bool, none, AddDns, __VA_ARGS__)
+
 #define TUNNEL_SERVICE_CONTROL(XX, ...) \
 XX(operation, model_string, none, Operation, __VA_ARGS__)
 
@@ -223,6 +229,7 @@ DECLARE_MODEL(tunnel_identity_metrics, TNL_IDENTITY_METRICS)
 DECLARE_MODEL(tunnel_command_inline, TUNNEL_CMD_INLINE)
 DECLARE_MODEL(tunnel_set_log_level, TUNNEL_SET_LOG_LEVEL)
 DECLARE_MODEL(tunnel_tun_ip_v4, TUNNEL_TUN_IP_V4)
+DECLARE_MODEL(tunnel_tun_ip_v6, TUNNEL_TUN_IP_V6)
 DECLARE_MODEL(tunnel_service_control, TUNNEL_SERVICE_CONTROL)
 DECLARE_MODEL(tunnel_status_change, TUNNEL_STATUS_CHANGE)
 DECLARE_MODEL(tunnel_add_identity, TUNNEL_ADD_IDENTITY)
@@ -325,28 +332,79 @@ typedef struct {
 } ziti_tunnel_ctrl;
 
 /**
-  * replaces first occurrence of _substring_ in _source_ with _with_.
-  * returns pointer to last replaced char in _source_, or NULL if no replacement was made.
-  */
+* 在源字符串(source)中替换第一个匹配的子串(substring)为指定内容(with)。
+* @param source      源字符串（会被修改），需保证足够的缓冲区空间
+* @param sourceSize   源字符串缓冲区总大小（防止溢出）
+* @param substring   待替换的目标子串
+* @param with        替换后的新内容
+* @return            指向源字符串中最后一个被替换字符的指针；若无替换返回 NULL
+*/
 char *string_replace(char *source, size_t sourceSize, const char *substring, const char *with);
-
-/** called by tunneler SDK after a client connection is intercepted */
+/**
+* 当客户端连接被隧道拦截时，由 SDK 调用此函数。
+* @param app_intercept_ctx 应用层拦截上下文（如预配置的服务策略）
+* @param io                IO 操作上下文句柄
+* @return                  SDK 内部使用的连接句柄（通常无需直接操作）
+*/
 void *ziti_sdk_c_dial(const void *app_intercept_ctx, struct io_ctx_s *io);
 
-/** called from tunneler SDK when intercepted client sends data */
+/**
+* 当被拦截的客户端发送数据时，SDK 调用此函数。
+* @param ziti_io_ctx  SDK 分配的隧道 IO 上下文
+* @param write_ctx    应用层写入上下文（如目标地址缓存）
+* @param data         待发送的数据指针
+* @param len          数据长度
+* @return             成功写入的字节数；负数表示错误（如连接已关闭）
+*/
 ssize_t ziti_sdk_c_write(const void *ziti_io_ctx, void *write_ctx, const void *data, size_t len);
 
-/** called by tunneler SDK after a client connection's RX is closed
- * return 0 if TX should still be open, 1 if both sides are closed */
+/**
+* 当客户端连接的接收方向（RX）关闭时调用。
+* @param io_ctx  IO 上下文
+* @return        0 表示发送方向（TX）仍开放；1 表示双向均已关闭
+*/
 int ziti_sdk_c_close(void *io_ctx);
+/**
+* 显式关闭连接的写入方向（发送 FIN 包）。
+* @param io_ctx  IO 上下文
+*/
 int ziti_sdk_c_close_write(void *io_ctx);
 
+/**
+* 创建并绑定 Ziti 隧道主机上下文。
+* @param ziti_ctx     Ziti 实例上下文
+* @param loop         libuv 事件循环句柄
+* @param service_name 目标服务名称（需在 Ziti 控制器注册）
+* @param cfgtype      配置类型（如隧道协议类型）
+* @param cfg          具体配置参数（JSON 或结构体）
+* @return             主机上下文句柄
+*/
 host_ctx_t *ziti_sdk_c_host(void *ziti_ctx, uv_loop_t *loop, const char *service_name, cfg_type_e cfgtype, const void *cfg);
 
-/** passed to ziti-sdk via ziti_options.service_cb */
+/**
+* Ziti 服务状态变更回调（由 ziti_options.service_cb 注册）。
+* @param ziti_ctx   Ziti 实例上下文
+* @param service    服务对象（包含策略、端点等信息）
+* @param status     状态码（0 表示可用，负数表示错误）
+* @param tnlr_ctx   隧道应用层上下文
+* @return           关联的隧道服务句柄
+*/
 tunneled_service_t *ziti_sdk_c_on_service(ziti_context ziti_ctx, ziti_service *service, int status, void *tnlr_ctx);
 
+/**
+* 移除所有已注册的拦截规则。
+* @param ziti_ctx  Ziti 实例上下文
+* @param tnlr_ctx  隧道应用层上下文
+*/
 void remove_intercepts(ziti_context ziti_ctx, void *tnlr_ctx);
+
+/**
+* 初始化隧道控制通道。
+* @param loop         libuv 事件循环
+* @param tnlr_ctx     隧道上下文（含配置、状态）
+* @param event_cb     事件回调（如连接建立/断开）
+* @return             隧道控制句柄（含 API 操作集）
+*/
 
 const ziti_tunnel_ctrl* ziti_tunnel_init_cmd(uv_loop_t *loop, tunneler_context, event_cb);
 

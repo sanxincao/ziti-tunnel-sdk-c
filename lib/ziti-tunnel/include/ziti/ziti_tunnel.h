@@ -86,6 +86,7 @@ typedef STAILQ_HEAD(address_list_s, address_s) address_list_t;
 typedef struct port_range_s {
     int low;
     int high;
+    struct in6_addr ipv6_address;
     char str[16]; // [123456-123456]
     STAILQ_ENTRY(port_range_s) entries;
 } port_range_t;
@@ -109,10 +110,11 @@ extern void intercept_ctx_set_match_addr(intercept_ctx_t *intercept, intercept_m
 extern void intercept_ctx_add_protocol(intercept_ctx_t *ctx, const char *protocol);
 /** parse address string as hostname|ip|cidr and add result to list of intercepted addresses */
 extern void intercept_ctx_add_address(intercept_ctx_t *i_ctx, const ziti_address *address);
+extern void intercept_ctx_add46c_address(intercept_ctx_t* i_ctx, interp *addr);
 extern void intercept_ctx_add_allowed_source_address(intercept_ctx_t *i_ctx, const ziti_address *address);
 extern port_range_t *intercept_ctx_add_port_range(intercept_ctx_t *i_ctx, uint16_t low, uint16_t high);
 extern void intercept_ctx_override_cbs(intercept_ctx_t *i_ctx, ziti_sdk_dial_cb dial, ziti_sdk_write_cb write, ziti_sdk_close_cb close_write, ziti_sdk_close_cb close);
-
+void intercept_ctx_free_addresses(intercept_ctx_t* i_ctx);
 struct io_ctx_s {
     tunneler_io_context   tnlr_io;
     void *                ziti_io; // context specific to ziti SDK being used by the app.
@@ -146,7 +148,9 @@ extern port_range_t *parse_port_range(uint16_t low, uint16_t high);
 extern bool ziti_address_from_string(ziti_address *za, const char *hn_or_cidr);
 /** convert from internet address types */
 extern void ziti_address_from_in_addr(ziti_address *za, const struct in_addr *a);
+extern bool ziti_address_from4_string(ziti_address* za, const char* hn_or_cidr);
 extern void ziti_address_from_in6_addr(ziti_address *za, const struct in6_addr *a);
+extern void parse6_ziti_address(ziti_address* za, const char* json, int json_buflen);
 /** convert from socket address types */
 extern bool ziti_address_from_sockaddr(ziti_address *za, const struct sockaddr *sa);
 extern void ziti_address_from_sockaddr_in(ziti_address *za, const struct sockaddr_in *sin);

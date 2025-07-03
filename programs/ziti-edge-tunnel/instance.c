@@ -36,7 +36,7 @@
 model_map tnl_identity_map = {0};
 static const char* CFG_INTERCEPT_V1 = "intercept.v1";
 static const char* CFG_HOST_V1 = "host.v1";
-static const char* CFG_ZITI_TUNNELER_CLIENT_V1 = "ziti-tunneler-client.v1";
+static const char* CFG_ZITI_TUNNELER_CLIENT_V1 = "idn-tunneler-client.v1";
 static tunnel_status tnl_status = {0};
 extern char *config_dir;
 
@@ -48,7 +48,7 @@ tunnel_identity *find_tunnel_identity(const char* identifier) {
     if (tnl_id != NULL) {
         return tnl_id;
     } else {
-        ZITI_LOG(WARN, "Identity ztx[%s] is not loaded yet or already removed.", identifier);
+        //ZITI_LOG(WARN, "Identity ztx[%s] is not loaded yet or already removed.", identifier);
         return NULL;
     }
 }
@@ -139,6 +139,24 @@ void set_mfa_timeout(tunnel_identity *tnl_id) {
         tnl_id->MinTimeoutRemInSvcEvent = mfa_min_timeout_rem;
     }
 
+}
+
+char* get_ip6_range_from_config() {
+    char* ip6_range = NULL;
+
+    // 检查 TunIpv6 和前缀长度是否已设置
+    if (tnl_status.TunIpv6 != NULL && tnl_status.Tun6PrefixLength > 0) {
+        // 打印当前的 TunIpv6 和前缀长度
+        ////printf("[DEBUG] get_ip6_range_from_config() - TunIpv6: %s, Tun6PrefixLength: %d\n", tnl_status.TunIpv6, tnl_status.Tun6PrefixLength);
+
+        // 分配内存并格式化 IP 范围字符串
+        ip6_range = calloc(30, sizeof(char));
+        snprintf(ip6_range, 30 * sizeof(char), "%s/%d", tnl_status.TunIpv6, (int)tnl_status.Tun6PrefixLength);
+
+        // 打印生成的 IPv6 范围
+        ////printf("[DEBUG] 生成的 IPv6 范围: %s\n", ip6_range);
+    }
+    return ip6_range;
 }
 
 void add_or_remove_services_from_tunnel(tunnel_identity *id, tunnel_service_array added_services, tunnel_service_array removed_services) {
@@ -636,9 +654,17 @@ bool load_tunnel_status(const char* config_data) {
             free_ip_info(tnl_status.IpInfo);
             tnl_status.IpInfo = NULL;
         }
+        if (tnl_status.Ip6Info) {
+            free_ip6_info(tnl_status.Ip6Info); // 释放IPv6信息
+            tnl_status.Ip6Info = NULL;
+        }
         if (tnl_status.TunIpv4) {
             free((char*)tnl_status.TunIpv4);
             tnl_status.TunIpv4 = NULL;
+        }
+        if (tnl_status.TunIpv6) {
+            free((char*)tnl_status.TunIpv6);
+            tnl_status.TunIpv6 = NULL;
         }
         if (tnl_status.ServiceVersion) {
             free_service_version(tnl_status.ServiceVersion);
@@ -706,11 +732,15 @@ char *get_tunnel_config(size_t *json_len) {
         tnl_config.Identities = tnl_id_arr_config;
     }
     tnl_config.IpInfo = tnl_sts->IpInfo;
+    tnl_config.Ip6Info = tnl_sts->Ip6Info;
     tnl_config.ServiceVersion = tnl_sts->ServiceVersion;
     tnl_config.TunIpv4 = tnl_sts->TunIpv4;
+    tnl_config.TunIpv6 = tnl_sts->TunIpv6;
     tnl_config.TunPrefixLength = tnl_sts->TunPrefixLength;
+    tnl_config.Tun6PrefixLength = tnl_sts->Tun6PrefixLength;
     tnl_config.LogLevel = strdup(tnl_sts->LogLevel);
     tnl_config.AddDns = tnl_sts->AddDns;
+    tnl_config.AddDns6 = tnl_sts->AddDns6;
     tnl_config.ApiPageSize = tnl_sts->ApiPageSize;
 
     char* tunnel_config_json = tunnel_status_to_json(&tnl_config, 0, json_len);
@@ -724,8 +754,10 @@ char *get_tunnel_config(size_t *json_len) {
         tnl_config.Identities = NULL;
     }
     tnl_config.IpInfo = NULL;
+    tnl_config.Ip6Info = NULL;
     tnl_config.ServiceVersion = NULL;
     tnl_config.TunIpv4 = NULL;
+    tnl_config.TunIpv6 = NULL;
     free_tunnel_status(&tnl_config);
 
     return tunnel_config_json;
@@ -776,6 +808,82 @@ void set_ip_info(uint32_t dns_ip, uint32_t tun_ip, int bits) {
     netmask = htonl(netmask);
     ip_addr_t netmask_ipv4 = IPADDR4_INIT(netmask);
     tnl_status.IpInfo->Subnet = strdup(ipaddr_ntoa(&netmask_ipv4));
+}
+
+// 自定义 IPv6 格式优化函数
+void ipv6_shorten(const char *input, char *output, size_t size) {
+    const char *zero_pattern = ":0:0:0:0:0:0:";
+    const char *short_zero = "::";
+    char buffer[INET6_ADDRSTRLEN];
+
+    strncpy(buffer, input, sizeof(buffer));
+
+    // 替换连续的全零段
+    char *p = strstr(buffer, zero_pattern);
+    if (p) {
+        size_t len = p - buffer;
+        snprintf(output, size, "%.*s%s%s", (int)len, buffer, short_zero, p + strlen(zero_pattern));
+    } else {
+        strncpy(output, buffer, size); // 没有全零直接复制
+    }
+}
+void set_ip6_info(struct ip_addr* dns_ip, struct ip_addr* tun_ip, int bits) {
+
+    // 打印 IPv6 地址
+    // //printf("DNS IPv6: %s\n", ipaddr_ntoa(dns_ip));
+    // //printf("TUN IPv6: %s\n", ipaddr_ntoa(tun_ip));
+
+    // 更新前缀长度
+    tnl_status.Tun6PrefixLength = bits;
+
+    // 释放旧的 TunIpv6 地址内存
+    if (tnl_status.TunIpv6) {
+        free(tnl_status.TunIpv6);
+        tnl_status.TunIpv6 = NULL;
+    }
+
+    // 初始化 TUN IPv6 地址
+    ip6_addr_t tun_ip6;
+    memcpy(tun_ip6.addr, tun_ip->u_addr.ip6.addr, sizeof(tun_ip6.addr));
+    tnl_status.TunIpv6 = strdup(ip6addr_ntoa(&tun_ip6));
+
+    // 释放旧的 IP6 信息结构
+    if (tnl_status.Ip6Info) {
+        free_ip6_info(tnl_status.Ip6Info);
+        free(tnl_status.Ip6Info);
+        tnl_status.Ip6Info = NULL;
+    }
+
+    // 初始化 DNS IPv6 地址
+    ip6_addr_t dns_ip6;
+    memcpy(dns_ip6.addr, dns_ip->u_addr.ip6.addr, sizeof(dns_ip6.addr));
+
+    // 创建新的 IP6 信息结构
+    tnl_status.Ip6Info = calloc(1, sizeof(ip_info));
+    tnl_status.Ip6Info->Ip6 = strdup(ip6addr_ntoa(&tun_ip6));
+    tnl_status.Ip6Info->DNS = strdup(ip6addr_ntoa(&dns_ip6));
+    tnl_status.Ip6Info->MTU = 65535;
+
+    // 计算 IPv6 子网掩码
+    uint8_t netmask[16] = { 0 };  // IPv6 子网掩码有 16 字节
+    for (int i = 0; i < bits; ++i) {
+        netmask[i / 8] |= (1 << (7 - (i % 8)));
+    }
+
+    // 格式化子网掩码   
+    char formatted_mask[INET6_ADDRSTRLEN];
+    struct in6_addr netmask_ipv6;
+    memcpy(netmask_ipv6.s6_addr, netmask, sizeof(netmask_ipv6.s6_addr));
+    inet_ntop(AF_INET6, &netmask_ipv6, formatted_mask, sizeof(formatted_mask));
+
+    // 优化格式，补全 :: 表示零
+    char optimized_mask[INET6_ADDRSTRLEN];
+    ipv6_shorten(formatted_mask, optimized_mask, sizeof(optimized_mask)); // 自定义函数
+
+    // 保存优化后的子网掩码
+    tnl_status.Ip6Info->Subnet = strdup(optimized_mask);
+    ZITI_LOG(INFO, "set_ip6_info: DNS=%s, TUN=%s, Prefix Length=%d",
+        tnl_status.Ip6Info->DNS, tnl_status.Ip6Info->Ip6, tnl_status.Tun6PrefixLength);
 }
 
 void set_log_level(const char* log_level) {
@@ -874,6 +982,49 @@ void set_tun_ipv4_into_instance(const char* tun_ip, int prefixLength, bool addDn
     tnl_status.AddDns = addDns;
 }
 
+void set_tun_ipv6_into_instance(const char* tun_ip, int prefixLength, bool addDns) {
+    // 打印输入参数日志
+    //printf("[DEBUG] set_tun_ipv6_into_instance() - 收到的 tun_ip: %s, prefixLength: %d, addDns: %d\n", tun_ip, prefixLength, addDns);
+
+    // 如果存在，释放已有的 IPv6 地址
+    if (tnl_status.TunIpv6 != NULL) {
+        //printf("[DEBUG] 释放之前的 TunIpv6: %s\n", tnl_status.TunIpv6);
+        free((char*)tnl_status.TunIpv6);
+    }
+
+    // 复制并赋值新的 IPv6 地址
+    tnl_status.TunIpv6 = strdup(tun_ip);
+    tnl_status.Tun6PrefixLength = prefixLength;
+    tnl_status.AddDns6 = addDns;
+
+    // 确认赋值
+    //printf("[DEBUG] TunIpv6 已设置为: %s\n", tnl_status.TunIpv6);
+}
+
+// Increment function for IPv6 address
+char* increment_ipv6(char *ipv6, int increment) {
+    struct in6_addr addr;
+
+    if (inet_pton(AF_INET6, ipv6, &addr) != 1) {
+        //printf("Invalid IP address format.\n");
+        return NULL;
+    }
+
+    // Increment the IPv6 address (handle overflow)
+    for (int i = 15; i >= 0 && increment > 0; i--) {
+        int sum = addr.s6_addr[i] + (increment & 0xFF);
+        addr.s6_addr[i] = sum & 0xFF;
+        increment = sum >> 8;  // Carry to the next byte if needed
+    }
+
+    if (inet_ntop(AF_INET6, &addr, ipv6, INET6_ADDRSTRLEN) == NULL) {
+        //printf("Error converting IP address.\n");
+        return NULL;
+    }
+
+    return ipv6;
+}
+
 char* get_ip_range_from_config() {
     char* ip_range = NULL;
     if (tnl_status.TunIpv4 != NULL && tnl_status.TunPrefixLength > 0) {
@@ -932,4 +1083,5 @@ IMPL_MODEL(tunnel_service_permissions, TUNNEL_SERVICE_PERMISSIONS)
 IMPL_MODEL(tunnel_service, TUNNEL_SERVICE)
 IMPL_MODEL(tunnel_status, TUNNEL_STATUS)
 IMPL_MODEL(ip_info, IP_INFO)
+IMPL_MODEL(ip6_info, IP6_INFO)
 IMPL_MODEL(service_version, SERVICE_VERSION)

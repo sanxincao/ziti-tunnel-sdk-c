@@ -56,6 +56,7 @@ static void default_loop_sem_init(void) {
     uv_sem_init(&default_loop_sem, 1);
 }
 
+static int add_address(const ziti_address* z_addr, intercept_ctx_t* ctx);
 static tunneler_context create_tunneler_ctx(tunneler_sdk_options *opts, uv_loop_t *loop) {
     TNL_LOG(INFO, "Ziti Tunneler SDK (%s)", ziti_tunneler_version());
 
@@ -75,6 +76,7 @@ static tunneler_context create_tunneler_ctx(tunneler_sdk_options *opts, uv_loop_
     memcpy(&ctx->opts, opts, sizeof(ctx->opts));
     return ctx;
 }
+
 
 tunneler_context ziti_tunneler_init_host_only(tunneler_sdk_options *opts, uv_loop_t *loop) {
     return create_tunneler_ctx(opts, loop);
@@ -270,6 +272,96 @@ void intercept_ctx_add_address(intercept_ctx_t *i_ctx, const ziti_address *za) {
     STAILQ_INSERT_TAIL(&i_ctx->addresses, a, entries);
 }
 
+// Helper function: Check if the address already exists
+static int address_exists(const intercept_ctx_t* ctx, const ziti_address* z_addr) {
+    address_t* a;
+    STAILQ_FOREACH(a, &ctx->addresses, entries) {
+        if (memcmp(&a->za, z_addr, sizeof(ziti_address)) == 0) {
+            return 1; // Address already exists
+        }
+    }
+    return 0; // Address not found
+}
+static int add_address(const ziti_address* z_addr, intercept_ctx_t* ctx) {
+    if (!z_addr || address_exists(ctx, z_addr)) {
+        return 0; // Skip adding duplicate or NULL address
+    }
+
+    address_t* a = calloc(1, sizeof(address_t));
+    if (!a) {
+        TNL_LOG(ERR, "Failed to allocate memory for address");
+        return -1;
+    }
+
+    memcpy(&a->za, z_addr, sizeof(ziti_address));
+    ziti_address_print(a->str, sizeof(a->str), z_addr);
+    STAILQ_INSERT_TAIL(&ctx->addresses, a, entries);
+    return 0;
+}
+
+void _intercept_ctx_add46c_address(intercept_ctx_t* i_ctx, interp* addr) {
+    if (!i_ctx || !addr) {
+        return;
+    }
+
+    // Attempt to add each address
+    if (add_address(addr->ip, i_ctx) != 0) return;
+    if (add_address(addr->ip4, i_ctx) != 0) return;
+    if (add_address(addr->ip6, i_ctx) != 0) return;
+}
+
+int add_address_to_context(const ziti_address* z_addr, intercept_ctx_t* ctx) {
+    if (!z_addr) {
+        return 0; // No address to add, return success
+    }
+
+    address_t* a = calloc(1, sizeof(address_t));
+    if (!a) {
+        TNL_LOG(ERR, "Failed to allocate memory for address");
+        return -1; // Return error on memory allocation failure
+    }
+
+    memcpy(&a->za, z_addr, sizeof(ziti_address));
+    ziti_address_print(a->str, sizeof(a->str), z_addr);
+    STAILQ_INSERT_TAIL(&ctx->addresses, a, entries);
+    return 0; // Return success
+}
+
+void intercept_ctx_add46c_address(intercept_ctx_t* i_ctx, interp* addr) {
+    if (!i_ctx || !addr) {
+        return; // Invalid input, simply return
+    }
+
+    // Add primary IP address
+    if (add_address_to_context(addr->ip, i_ctx) != 0) {
+        return; // Fail early if adding primary IP fails
+    }
+
+    // Add IPv4 address
+    if (add_address_to_context(addr->ip4, i_ctx) != 0) {
+        TNL_LOG(ERR, "Failed to add IPv4 address, cleaning up");
+        intercept_ctx_free_addresses(i_ctx); // Clean up all previously added addresses
+        return;
+    }
+
+    // Add IPv6 address
+    if (add_address_to_context(addr->ip6, i_ctx) != 0) {
+        TNL_LOG(ERR, "Failed to add IPv6 address, cleaning up");
+        intercept_ctx_free_addresses(i_ctx); // Clean up all previously added addresses
+        return;
+    }
+}
+
+void intercept_ctx_free_addresses(intercept_ctx_t* i_ctx) {
+    if (!i_ctx) return;
+
+    address_t* a;
+    while ((a = STAILQ_FIRST(&i_ctx->addresses)) != NULL) {
+        STAILQ_REMOVE_HEAD(&i_ctx->addresses, entries);
+        free(a);
+    }
+}
+
 void intercept_ctx_add_allowed_source_address(intercept_ctx_t *i_ctx, const ziti_address *za) {
     if (!i_ctx || !za) {
         return;
@@ -319,27 +411,31 @@ int ziti_tunneler_intercept(tunneler_context tnlr_ctx, intercept_ctx_t *i_ctx) {
     }
 
     model_map_clear(&tnlr_ctx->intercepts_cache, NULL);
+    model_map seen = {0};
     address_t *address;
     STAILQ_FOREACH(address, &i_ctx->addresses, entries) {
         protocol_t *proto;
         STAILQ_FOREACH(proto, &i_ctx->protocols, entries) {
             port_range_t *pr;
             STAILQ_FOREACH(pr, &i_ctx->port_ranges, entries) {
-                // todo find conflicts with services
-                // intercept_ctx_t *match;
-                // match = lookup_intercept_by_address(tnlr_ctx, proto->protocol, &address->ip, pr->low, pr->high);
-                TNL_LOG(DEBUG, "intercepting address[%s:%s:%s] service[%s]",
-                        proto->protocol, address->str, pr->str, i_ctx->service_name);
+                char key[512];
+                snprintf(key, sizeof(key), "%s:%s:%s", proto->protocol, address->str, pr->str);
+
+                if (model_map_get(&seen, key) == NULL) {
+                    model_map_set(&seen, key, "1");
+
+                    TNL_LOG(DEBUG, "intercepting address[%s:%s:%s] service[%s]",
+                            proto->protocol, address->str, pr->str, i_ctx->service_name);
+                    }
             }
         }
     }
-
     STAILQ_FOREACH(address, &i_ctx->addresses, entries) {
          add_route(tnlr_ctx->opts.netif_driver, address);
     }
 
     LIST_INSERT_HEAD(&tnlr_ctx->intercepts, (struct intercept_ctx_s *)i_ctx, entries);
-
+    model_map_clear(&seen, NULL);
     return 0;
 }
 
@@ -698,8 +794,9 @@ void ziti_tunnel_get_ip_stats(tunnel_ip_stats *stats) {
 }
 
 
+#define GIT1_VERSION v0.14.5
 const char* ziti_tunneler_version() {
-    return str(GIT_VERSION);
+    return str(GIT1_VERSION);
 }
 
 const char* ziti_tunneler_build_date() {
