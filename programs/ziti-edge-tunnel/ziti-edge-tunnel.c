@@ -926,16 +926,15 @@ static int run_tunnel(
     // ZITI_LOG(INFO, "dns_subnet6: %s", dns_subnet6);
 
 #if __APPLE__ && __MACH__
-    tun = utun_open(tun_error, sizeof(tun_error), ip_range);
+    // On macOS, utun_open only accepts one CIDR, prioritize IPv4
+    tun = utun_open(tun_error, sizeof(tun_error), ip4_range);
 #elif __linux__
     // 调用方需预先分配内存
     NetworkStatus status = g_network_status;
     //NetworkStatus status = detect_network_support();  
-    // printf("双栈环境 : %s\n", status.is_dual_stack? "✅" : "❌");
-    // printf("ipv4单栈环境 : %s\n", status.has_ipv4 ? "✅" : "❌");
-    // printf("ipv6单栈环境 : %s\n", status.has_ipv6 ? "✅" : "❌");
+
     if (status.has_ipv4 && status.has_ipv6) {
-        printf("双栈环境 : ✅\n");
+        printf("双栈环境 : \n");
         tun = tun_open(
             ziti_loop,
             &tun_ip4,        // IPv4隧道地址（指针）
@@ -948,7 +947,7 @@ static int run_tunnel(
             sizeof(tun_error)
         );
     } else if (status.has_ipv4) {
-        printf("IPv4单栈环境 : ✅\n");
+        printf("IPv4单栈环境 : \n");
         tun = tun_open(
             ziti_loop,
             &tun_ip4,        // IPv4隧道地址（指针）
@@ -961,7 +960,7 @@ static int run_tunnel(
             sizeof(tun_error)
         );
     } else if (status.has_ipv6) {
-        printf("IPv6单栈环境 : ✅\n");
+        printf("IPv6单栈环境 : \n");
         tun = tun_open(
             ziti_loop,
             NULL,            // 不配置IPv4隧道地址
@@ -974,7 +973,7 @@ static int run_tunnel(
             sizeof(tun_error)
         );
     } else {
-        printf("无可用网络 : ❌\n");
+        printf("无可用网络 : \n");
         // 处理无网络场景
     }
     /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
