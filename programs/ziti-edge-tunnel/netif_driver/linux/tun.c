@@ -290,7 +290,7 @@ static void set_dns(uv_work_t *wr) {
     ip6addr_ntoa_r(&dns_maintainer.dns_ip6, ipv6_str, sizeof(ipv6_str));
     struct in6_addr addr6;
     NetworkStatus status;
-    detect_network_win(&status);
+    detect_network_support(&status);
     if (status.has_ipv4 && status.has_ipv6) {
         // 双栈环境：同时设置 IPv4 和 IPv6 DNS
         dns_updater(

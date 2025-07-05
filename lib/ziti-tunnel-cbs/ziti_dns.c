@@ -29,6 +29,10 @@
 #include <iphlpapi.h>
 #pragma comment(lib, "iphlpapi.lib")
 #pragma comment(lib, "ws2_32.lib")
+#else
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
 #endif
 
 #define MAX_UPSTREAMS 5
@@ -322,14 +326,31 @@ void detect_network_support(NetworkStatus* status) {
     free(addresses);
 }
 #else
-// Stub implementation for non-Windows platforms
+// Implementation for non-Windows platforms
 void detect_network_support(NetworkStatus* status) {
-    // For non-Windows platforms, assume dual-stack support
-    status->has_ipv4 = 1;
-    status->has_ipv6 = 1;
-    status->has_valid_ipv6 = 1;
-    status->has_link_local = 1;
-    status->is_dual_stack = 1;
+    if (status == NULL) return;
+    
+    // Initialize status
+    memset(status, 0, sizeof(NetworkStatus));
+    
+    // For non-Windows platforms, provide basic network detection
+    // Check for IPv4 capability
+    int sock4 = socket(AF_INET, SOCK_DGRAM, 0);
+    if (sock4 >= 0) {
+        status->has_ipv4 = 1;
+        close(sock4);
+    }
+    
+    // Check for IPv6 capability
+    int sock6 = socket(AF_INET6, SOCK_DGRAM, 0);
+    if (sock6 >= 0) {
+        status->has_ipv6 = 1;
+        status->has_valid_ipv6 = 1;
+        status->has_link_local = 1; // Assume link-local is available if IPv6 works
+        close(sock6);
+    }
+    
+    status->is_dual_stack = (status->has_ipv4 && status->has_ipv6);
 }
 #endif
 

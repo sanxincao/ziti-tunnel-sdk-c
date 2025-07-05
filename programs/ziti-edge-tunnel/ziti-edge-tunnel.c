@@ -1407,7 +1407,11 @@ static void custom_ip(const char *optarg) {
     strncpy(optarg_copy, optarg, sizeof(optarg_copy) - 1);
     optarg_copy[sizeof(optarg_copy) - 1] = '\0';
 
+#ifdef _WIN32
     token = strtok_s(optarg_copy, " ", &saveptr);
+#else
+    token = strtok_r(optarg_copy, " ", &saveptr);
+#endif
     while (token != NULL) {
         char* cidr = strchr(token, '/');
         if (cidr != NULL) {
@@ -1431,7 +1435,11 @@ static void custom_ip(const char *optarg) {
         else {
             printf("Invalid IP format: %s\n", token);
         }
+#ifdef _WIN32
         token = strtok_s(NULL, " ", &saveptr);
+#else
+        token = strtok_r(NULL, " ", &saveptr);
+#endif
     }
     if (ipv4_cidr[0] == '\0' && ipv6_cidr[0] == '\0') {
         printf("No valid IP address found.\n");

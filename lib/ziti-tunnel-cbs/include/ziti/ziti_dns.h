@@ -62,7 +62,12 @@ void ziti_dns_deregister_intercept(void *intercept);
 
 extern void detect_network_support(NetworkStatus *status);
 
+#ifdef _WIN32
 extern void detect_network_win(NetworkStatus* status);
+#else
+// For non-Windows platforms, use detect_network_support instead
+#define detect_network_win(status) detect_network_support(status)
+#endif
 
 #ifdef __cplusplus
 };
