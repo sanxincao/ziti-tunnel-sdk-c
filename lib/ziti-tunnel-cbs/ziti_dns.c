@@ -285,6 +285,7 @@ int check_ipv6_route() {
 #define IS_ULA_IPv6(addr)     ((addr)->s6_addr[0] == 0xFD)         // fd00::/8
 #define IS_LINKLOCAL_IPv6(addr) ((addr)->s6_addr[0] == 0xFE && ((addr)->s6_addr[1] & 0xC0) == 0x80)  // fe80::/10
 
+#ifdef _WIN32
 void detect_network_support(NetworkStatus* status) {
     IP_ADAPTER_ADDRESSES* addresses = NULL, * addr = NULL;
     ULONG outBufLen = 15000;
@@ -320,6 +321,17 @@ void detect_network_support(NetworkStatus* status) {
     status->is_dual_stack = (status->has_ipv4 && status->has_ipv6);
     free(addresses);
 }
+#else
+// Stub implementation for non-Windows platforms
+void detect_network_support(NetworkStatus* status) {
+    // For non-Windows platforms, assume dual-stack support
+    status->has_ipv4 = 1;
+    status->has_ipv6 = 1;
+    status->has_valid_ipv6 = 1;
+    status->has_link_local = 1;
+    status->is_dual_stack = 1;
+}
+#endif
 
 static ip_addr_t next_ipv6() {
     ZITI_LOG(INFO, "从地址池拿一个ipv6地址\n");
